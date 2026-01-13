@@ -5,8 +5,6 @@ Project's tech stack:
 * CLI based application
 * uv as package management system
 
-Read also ./SPEC.md file for detailed specification of the project.
-
 ---
 
 Appended rules from python-template:

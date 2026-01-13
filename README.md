@@ -34,6 +34,77 @@ export PROXY_PORT=9000
 uv run albicilla-proxy
 ```
 
+### Configuring clients
+
+Albicilla currently proxies **only** the `/v1/chat/completions` endpoint. Any client that can target an OpenAI-compatible chat completions API can reuse your upstream API key and simply point its base URL at the proxy (for example `http://127.0.0.1:9000/v1`). Setting `OPENAI_API_BASE` or the tool’s equivalent `base_url` flag is usually enough.
+
+> Keep using your real OpenAI (or other upstream) API key. Albicilla captures the traffic while forwarding it to the upstream provider.
+
+#### OpenAI SDK (Python)
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:9000/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+)
+
+completion = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Ping"}],
+)
+print(completion.choices[0].message.content)
+```
+
+#### OpenAI SDK (JavaScript/TypeScript)
+
+```ts
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: "http://127.0.0.1:9000/v1",
+});
+
+const result = await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Ping" }],
+});
+console.log(result.choices[0].message);
+```
+
+#### LangChain
+
+```python
+import os
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+    openai_api_base="http://127.0.0.1:9000/v1",
+)
+response = llm.invoke("Summarize today's weather")
+print(response.content)
+```
+
+#### Pydantic.AI
+
+```python
+import os
+from pydantic_ai import Agent
+from pydantic_ai.clients.openai import OpenAIChatCompletionsClient
+
+client = OpenAIChatCompletionsClient(
+    api_key=os.environ["OPENAI_API_KEY"],
+    base_url="http://127.0.0.1:9000/v1",
+)
+weather_bot = Agent("Summarize weather alerts", client=client, model="gpt-4o-mini")
+print(weather_bot.run("Any storms expected?"))
+```
+
 ## Conversation Converter
 
 Use the bundled `albicilla-conv` CLI to turn captured proxy logs into JSONL datasets that can be fed to fine-tuning or analytics workflows. All commands expect `--logs` to point at the directory that the proxy writes to and `--output` to target a directory where converted files will be stored.
