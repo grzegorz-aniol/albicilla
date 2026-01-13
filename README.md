@@ -5,6 +5,7 @@ OpenAI-compatible logging proxy that captures LLM requests/responses to JSONL fi
 ## Features
 
 - Drop-in replacement for OpenAI API endpoints
+- Supports `/v1/chat/completions` endpoint (both streaming and non-streaming requests)
 - Forwards requests to upstream LLM and logs request/response pairs
 - Per-session JSONL logging with automatic date-based organization
 - Session grouping via `user` field, headers, or bearer tokens
