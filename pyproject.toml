@@ -16,6 +16,7 @@ dependencies = [
 ]
 packages = [
     { include = "albicilla", from = "src" },
+    { include = "conv", from = "src" },
 ]
 
 [build-system]
@@ -27,6 +28,7 @@ package = true
 
 [project.scripts]
 albicilla-proxy = "albicilla.main:main"
+albicilla-conv = "conv.main:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

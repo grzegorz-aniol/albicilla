@@ -34,6 +34,42 @@ export PROXY_PORT=9000
 uv run albicilla-proxy
 ```
 
+## Conversation Converter
+
+Use the bundled `albicilla-conv` CLI to turn captured proxy logs into JSONL datasets that can be fed to fine-tuning or analytics workflows. All commands expect `--logs` to point at the directory that the proxy writes to and `--output` to target a directory where converted files will be stored.
+
+### Per-day output with JSON tool call normalization (default)
+
+```bash
+uv run albicilla-conv --logs ./proxy_logs --output ./output
+```
+
+This creates day-based subdirectories inside `./output` and rewrites OpenAI tool call payloads into the standard `json_tool_call` schema for downstream compatibility.
+
+### Single-file export
+
+```bash
+uv run albicilla-conv --logs ./proxy_logs --output ./output --single-file
+```
+
+Collects all sessions into one `conversations.jsonl` file inside the output directory.
+
+### Keep native OpenAI format
+
+```bash
+uv run albicilla-conv --logs ./proxy_logs --output ./output --no-json-tool-calls
+```
+
+Disables the tool call transformation so responses remain exactly as captured by the proxy.
+
+### Verbose logging
+
+```bash
+uv run albicilla-conv --logs ./proxy_logs --output ./output -v
+```
+
+Adds progress information to stderr, which is useful when processing large log directories.
+
 ## Example Request
 
 ```bash
@@ -79,4 +115,3 @@ uv run pytest
 ## License
 
 MIT
-
