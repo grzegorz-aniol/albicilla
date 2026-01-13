@@ -2,18 +2,296 @@
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
 from conv.models import ConversationRecord, LogEntry, Message, RequestPayload, ResponseChoice, ResponsePayload, ToolDefinition
 from conv.processor import (
     coerce_arguments,
+    extract_tool_schemas,
     process_session,
     serialize_tool_calls,
     serialize_tool_result,
     transform_messages,
 )
+
+TIP_SPLIT_PROMPT = (
+    "Ile wyniesie indywidualna kwota napiwku dla każdej osoby w naszej grupie "
+    "archeologów, jeśli całkowity rachunek za kolację wynosi 250 złotych, a w "
+    "grupie jest nas pięcioro?"
+)
+TIP_SPLIT_FINAL_REPLY = (
+    "Indywidualna kwota napiwku dla każdej osoby w waszej grupie archeologów "
+    "wyniesie 50 złotych."
+)
+TIP_SPLIT_TOOL_CALL_ID = "call_tip_split"
+TIP_SPLIT_ARGUMENTS = {"total_bill": 250, "number_of_people": 5}
+TIP_SPLIT_ARGUMENTS_JSON = json.dumps(TIP_SPLIT_ARGUMENTS, ensure_ascii=False)
+TIP_SPLIT_RESULT_PAYLOAD = {"calculate_tip_split": {"individual_tip_amount": 50}}
+TIP_SPLIT_RESULT_CONTENT = json.dumps(TIP_SPLIT_RESULT_PAYLOAD, ensure_ascii=False)
+
+SAMPLE_TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_recipes",
+            "description": "Wyszukiwanie przepisów kulinarnych według określonych kryteriów",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cuisine": {
+                        "type": "string",
+                        "description": "Kuchnia przepisu",
+                    },
+                    "ingredient": {
+                        "type": "string",
+                        "description": "Składnik do wyszukania w przepisach",
+                    },
+                    "diet": {
+                        "type": "string",
+                        "description": "Ograniczenie dietetyczne dla przepisów",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_tip_split",
+            "description": "Obliczanie indywidualnej kwoty napiwku dla grupy",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "total_bill": {
+                        "type": "number",
+                        "description": "Całkowita kwota rachunku",
+                    },
+                    "number_of_people": {
+                        "type": "integer",
+                        "description": "Liczba osób w grupie",
+                    },
+                },
+                "required": ["total_bill", "number_of_people"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_recipes",
+            "description": "Wyszukiwanie przepisów na podstawie preferencji użytkownika",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cuisine": {
+                        "type": "string",
+                        "description": "Preferowana kuchnia",
+                    },
+                    "ingredients": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Składniki do uwzględnienia w przepisach",
+                    },
+                    "max_time": {
+                        "type": "integer",
+                        "description": "Maksymalny czas przygotowania w minutach",
+                    },
+                },
+                "required": ["cuisine", "ingredients"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recommend_books",
+            "description": "Rekomendacja książek",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "genre": {
+                        "type": "string",
+                        "description": "Preferowany gatunek książek",
+                    },
+                    "max_price": {
+                        "type": "number",
+                        "description": "Maksymalna cena, jaką użytkownik jest skłonny zapłacić",
+                    },
+                },
+                "required": ["genre", "max_price"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_loan_emi",
+            "description": "Oblicz równą miesięczną ratę spłaty kredytu na podstawie kwoty kredytu, oprocentowania i okresu kredytowania",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "loan_amount": {
+                        "type": "number",
+                        "description": "Kwota kredytu",
+                    },
+                    "interest_rate": {
+                        "type": "number",
+                        "description": "Oprocentowanie roczne",
+                    },
+                    "tenure": {
+                        "type": "integer",
+                        "description": "Okres kredytowania w miesiącach",
+                    },
+                },
+                "required": ["loan_amount", "interest_rate", "tenure"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": "Utwórz nowe zadanie w liście rzeczy do zrobienia",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Tytuł zadania",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Termin wykonania zadania",
+                    },
+                },
+                "required": ["title", "due_date"],
+            },
+        },
+    },
+]
+
+EXPECTED_TOOL_SCHEMAS = [tool["function"] for tool in SAMPLE_TOOL_DEFINITIONS]
+TOOL_CALL_PAYLOAD = {
+    "name": "calculate_tip_split",
+    "arguments": TIP_SPLIT_ARGUMENTS,
+}
+EXPECTED_TOOL_CALL_CONTENT = (
+    f"<tool_call>{json.dumps(TOOL_CALL_PAYLOAD, ensure_ascii=False)}</tool_call>"
+)
+EXPECTED_TOOL_RESULT_CONTENT = (
+    f'<tool_result tool_call_id="{TIP_SPLIT_TOOL_CALL_ID}">{TIP_SPLIT_RESULT_CONTENT}</tool_result>'
+)
+
+SAMPLE_SESSION_JSON = {
+    "messages": [
+        {"role": "user", "content": TIP_SPLIT_PROMPT},
+        {
+            "role": "assistant",
+            "content": '<tool_call>{"name": "calculate_tip_split", "arguments": {'
+            '"total_bill": 250, "number_of_people": 5}}</tool_call>',
+        },
+        {
+            "role": "tool",
+            "content": '<tool_result tool_call_id="call_tip_split">'
+            '{"calculate_tip_split": {"individual_tip_amount": 50}}</tool_result>',
+        },
+        {
+            "role": "assistant",
+            "content": TIP_SPLIT_FINAL_REPLY,
+        },
+    ],
+    "tools": EXPECTED_TOOL_SCHEMAS,
+}
+
+EXPECTED_SESSION_RECORD = ConversationRecord(
+    messages=SAMPLE_SESSION_JSON["messages"],
+    tools=EXPECTED_TOOL_SCHEMAS,
+)
+
+
+class TestSampleJson:
+    def _log_entry_from_sample(self, json_payload: dict, *, json_tool_calls: bool) -> LogEntry:
+        messages = json_payload["messages"]
+        tools = [ToolDefinition(type="function", function=function) for function in json_payload["tools"]]
+        request_messages = [Message(**message) for message in messages[:-1]]
+        response_message = Message(**messages[-1])
+        response = ResponsePayload(
+            id="resp-1",
+            object="chat.completion",
+            choices=[
+                ResponseChoice(
+                    index=0,
+                    message=response_message,
+                )
+            ],
+        )
+        return LogEntry(
+            timestamp=datetime.now(timezone.utc),
+            session_id="session-sample",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=request_messages,
+                tools=tools,
+            ),
+            response=response,
+        )
+
+    def _coerce_json_tool_call_messages(self, json_payload: dict) -> list[dict]:
+        coerced: list[dict] = []
+        for message in json_payload["messages"]:
+            if message["role"] != "assistant":
+                coerced.append(message)
+                continue
+
+            serialized = message["content"]
+            if "<tool_call>" not in serialized:
+                coerced.append(message)
+                continue
+
+            tool_calls = []
+            for raw_call in serialized.split("</tool_call>"):
+                if "<tool_call>" not in raw_call:
+                    continue
+                body = raw_call.split("<tool_call>")[-1]
+                tool_calls.append(
+                    {
+                        "id": "call_tip_split",
+                        "type": "function",
+                        "function": json.loads(body),
+                    }
+                )
+            coerced.append(
+                {
+                    "role": "assistant",
+                    "tool_calls": tool_calls,
+                    "content": None,
+                }
+            )
+        return coerced
+
+    def test_process_session_matches_expected_schema(self):
+        entry = self._log_entry_from_sample(SAMPLE_SESSION_JSON, json_tool_calls=True)
+        result = process_session([entry], json_tool_calls=True)
+        assert result == EXPECTED_SESSION_RECORD
+
+    def test_transform_messages_validates_xml_wrapping(self):
+        messages = self._coerce_json_tool_call_messages(SAMPLE_SESSION_JSON)
+        transformed = transform_messages(messages)
+        assert transformed[1]["content"] == SAMPLE_SESSION_JSON["messages"][1]["content"]
+        assert transformed[2]["content"] == SAMPLE_SESSION_JSON["messages"][2]["content"]
+
+
+class TestExtractToolSchemas:
+    def test_returns_function_blocks(self):
+        definitions = [ToolDefinition(**definition) for definition in SAMPLE_TOOL_DEFINITIONS]
+        schemas = extract_tool_schemas(definitions)
+        assert schemas == EXPECTED_TOOL_SCHEMAS
+
+    def test_empty_input(self):
+        assert extract_tool_schemas(None) == []
 
 
 class TestCoerceArguments:
@@ -161,5 +439,4 @@ class TestProcessSession:
         result = process_session([entry], json_tool_calls=False)
         assert result is not None
         assert len(result.tools) == 1
-        assert result.tools[0]["function"]["name"] == "my_tool"
-
+        assert result.tools[0]["name"] == "my_tool"

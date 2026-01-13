@@ -42,7 +42,7 @@ def process(
         help="Merge all sessions into one output file",
     ),
     json_tool_calls: bool = typer.Option(
-        True,
+        False,
         "--json-tool-calls/--no-json-tool-calls",
         "-j/-J",
         help="Transform tool_calls into inline JSON format",
@@ -131,4 +131,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

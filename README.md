@@ -1,6 +1,6 @@
 # Albicilla
 
-OpenAI-compatible logging proxy that captures LLM requests/responses to JSONL files for training and auditing.
+OpenAI-compatible logging pass-trough proxy that captures LLM requests/responses for auditing.
 
 ## Features
 
@@ -38,13 +38,43 @@ uv run albicilla-proxy
 
 Use the bundled `albicilla-conv` CLI to turn captured proxy logs into JSONL datasets that can be fed to fine-tuning or analytics workflows. All commands expect `--logs` to point at the directory that the proxy writes to and `--output` to target a directory where converted files will be stored.
 
-### Per-day output with JSON tool call normalization (default)
+#### Output schema (flattened by default)
+
+Each processed record mirrors the OpenAI fine-tuning schema but is normalized so downstream tooling does not need to inspect raw request envelopes:
+
+- `messages` contains the chronology of the request conversation plus the final assistant reply. When `--json-tool-calls` is enabled, tool calls are emitted inline using `<tool_call>` / `<tool_result>` wrappers so that the assistant content remains valid JSON even after multiple calls.
+- `tools` is derived from the original request’s `tools` array and flattened to just the function definition block (`{"name", "description", "parameters"}` etc.). This makes the schema explicit for analytics/training without carrying the surrounding wrapper structure.
+
+### Per-day output (native tool calls by default)
 
 ```bash
 uv run albicilla-conv --logs ./proxy_logs --output ./output
 ```
 
-This creates day-based subdirectories inside `./output` and rewrites OpenAI tool call payloads into the standard `json_tool_call` schema for downstream compatibility.
+This creates day-based subdirectories inside `./output` and keeps the tool call payloads exactly as captured by the proxy.
+
+### Enable tool structured output (JSON tool calls)
+
+```bash
+uv run albicilla-conv --logs ./proxy_logs --output ./output --json-tool-calls
+```
+
+Wraps tool invocations and results with inline structured tags so downstream consumers can reliably parse them:
+
+```json
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "<tool_call>{\"name\": \"retrieve_user\", \"arguments\": {\"user_id\": 42}}</tool_call>"
+    },
+    {
+      "role": "tool",
+      "content": "<tool_result tool_call_id=\"call_abc\">{\"name\": \"Ada Lovelace\"}</tool_result>"
+    }
+  ]
+}
+```
 
 ### Single-file export
 
@@ -53,14 +83,6 @@ uv run albicilla-conv --logs ./proxy_logs --output ./output --single-file
 ```
 
 Collects all sessions into one `conversations.jsonl` file inside the output directory.
-
-### Keep native OpenAI format
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output --no-json-tool-calls
-```
-
-Disables the tool call transformation so responses remain exactly as captured by the proxy.
 
 ### Verbose logging
 

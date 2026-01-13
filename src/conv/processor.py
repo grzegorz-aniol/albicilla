@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from .models import ConversationRecord, LogEntry, Message
+from .models import ConversationRecord, LogEntry, Message, ToolDefinition
 
 
 def read_session_file(path: Path) -> list[LogEntry]:
@@ -51,7 +51,7 @@ def read_session_file(path: Path) -> list[LogEntry]:
 
 def process_session(
     entries: list[LogEntry],
-    json_tool_calls: bool = True,
+    json_tool_calls: bool = False,
 ) -> ConversationRecord | None:
     """
     Process a session's log entries and produce a conversation record.
@@ -72,9 +72,7 @@ def process_session(
     ]
 
     # Extract tools from request (or empty list)
-    tools: list[dict[str, Any]] = []
-    if last_entry.request.tools:
-        tools = [tool.model_dump(exclude_none=True) for tool in last_entry.request.tools]
+    tools = extract_tool_schemas(last_entry.request.tools)
 
     # Append final response if available
     if last_entry.response and last_entry.response.choices:
@@ -217,6 +215,21 @@ def serialize_tool_result(content: str, tool_call_id: str) -> str:
     return f'<tool_result tool_call_id="{tool_call_id}">{content}</tool_result>'
 
 
+def extract_tool_schemas(tools: list[ToolDefinition] | None) -> list[dict[str, Any]]:
+    """Return function schemas from request tools, matching dataset structure."""
+    if not tools:
+        return []
+
+    flattened: list[dict[str, Any]] = []
+    for tool in tools:
+        function_block = tool.function
+        if isinstance(function_block, dict):
+            flattened.append(dict(function_block))
+            continue
+        flattened.append(tool.model_dump(exclude_none=True))
+    return flattened
+
+
 def coerce_arguments(arguments: Any) -> Any:
     """Parse the function arguments string into structured data when possible."""
     if isinstance(arguments, dict):
@@ -255,7 +268,7 @@ def extract_date_from_path(path: Path, logs_root: Path) -> date | None:
 
 def process_logs_directory(
     logs_dir: Path,
-    json_tool_calls: bool = True,
+    json_tool_calls: bool = False,
 ) -> dict[date, list[ConversationRecord]]:
     """
     Process all session files in a directory.
@@ -287,4 +300,3 @@ def process_logs_directory(
         records_by_date[session_date].append(record)
 
     return records_by_date
-
