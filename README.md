@@ -5,9 +5,9 @@ OpenAI-compatible logging proxy that captures LLM requests/responses to JSONL fi
 ## Features
 
 - Drop-in replacement for OpenAI API endpoints
+- Forwards requests to upstream LLM and logs request/response pairs
 - Per-session JSONL logging with automatic date-based organization
 - Session grouping via `user` field, headers, or bearer tokens
-- Synthetic response mode for offline testing
 
 ## Installation
 
@@ -20,15 +20,16 @@ uv sync
 Start the proxy server:
 
 ```bash
-uv run albicilla-proxy --log-root ./proxy_logs --host 127.0.0.1 --port 9000
+uv run albicilla-proxy --upstream-endpoint https://api.openai.com --log-root ./proxy_logs --host 127.0.0.1 --port 9000
 ```
 
 Or with environment variables:
 
 ```bash
-export LOG_ROOT=./proxy_logs
-export APP_HOST=127.0.0.1
-export APP_PORT=9000
+export PROXY_UPSTREAM_ENDPOINT=https://api.openai.com
+export PROXY_LOG_ROOT=./proxy_logs
+export PROXY_HOST=127.0.0.1
+export PROXY_PORT=9000
 uv run albicilla-proxy
 ```
 
@@ -61,9 +62,10 @@ Each line in the JSONL file contains:
 
 | Option | Env Variable | Default | Description |
 |--------|--------------|---------|-------------|
-| `--log-root` | `LOG_ROOT` | `./proxy_logs` | Root directory for logs |
-| `--host` | `APP_HOST` | `0.0.0.0` | Server bind address |
-| `--port` | `APP_PORT` | `9000` | Server port |
+| `--upstream-endpoint` | `PROXY_UPSTREAM_ENDPOINT` | *(required)* | Upstream OpenAI-compatible API base URL |
+| `--log-root` | `PROXY_LOG_ROOT` | `./proxy_logs` | Root directory for logs |
+| `--host` | `PROXY_HOST` | `0.0.0.0` | Server bind address |
+| `--port` | `PROXY_PORT` | `9000` | Server port |
 
 ## Development
 
