@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-all run-proxy
+.PHONY: test test-unit test-integration test-all test-output-integrity run-proxy
 
 default:
 	@echo "Specify a target"
@@ -25,3 +25,6 @@ test-integration:
 test-all:
 	uv run pytest tests/ -v
 
+# Validate output JSONL files only
+test-output-integrity:
+	uv run pytest tests/test_output_integrity.py -q
