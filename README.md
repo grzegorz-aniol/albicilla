@@ -34,6 +34,27 @@ export PROXY_PORT=9000
 uv run albicilla-proxy
 ```
 
+### Running with Docker
+
+Build the image locally:
+
+```bash
+docker build -t albicilla-proxy .
+```
+
+Start the container with the proxy bound to `localhost:9000`, mount the log directory for inspection, and pass any additional CLI arguments via `command`:
+
+```bash
+docker run --rm \
+  -p 9000:9000 \
+  -v "$(pwd)/proxy_logs:/app/proxy_logs" \
+  albicilla-proxy \
+  --upstream-endpoint https://api.openai.com \
+  --log-root /app/proxy_logs
+```
+
+All proxy flags can be overridden by appending to the end of the `docker run` invocation, letting you keep configuration alongside compose files or orchestration manifests.
+
 ### Configuring clients
 
 Albicilla currently proxies **only** the `/v1/chat/completions` endpoint. Any client that can target an OpenAI-compatible chat completions API can reuse your upstream API key and simply point its base URL at the proxy (for example `http://127.0.0.1:9000/v1`). Setting `OPENAI_API_BASE` or the tool’s equivalent `base_url` flag is usually enough.
@@ -163,7 +184,18 @@ uv run albicilla-conv --logs ./proxy_logs --output ./output -v
 
 Adds progress information to stderr, which is useful when processing large log directories.
 
+### Validating exported sessions
+
+Use the JSON Schema fixture and regression test to ensure any collected sessions conform to the expected structure:
+
+```bash
+uv run pytest tests/test_output_integrity.py -q
+```
+
+This test walks every `*.jsonl` file under `output/`, validates each tool definition against the shared schema fixture, and asserts that tool-call serialization (inline XML wrappers, required fields, etc.) matches the format consumed by downstream analytics.
+
 ## Example Request
+
 
 ```bash
 curl -X POST http://localhost:9000/v1/chat/completions \
