@@ -12,6 +12,31 @@ from .config import Settings
 # Thread-safe via a shared lock.
 _token_session_map: dict[str, str] = {}
 _token_lock = threading.Lock()
+_session_prefix: str | None = None
+
+
+def set_session_prefix(prefix: str | None) -> None:
+    """Set a global prefix for generated session IDs."""
+    global _session_prefix
+    if prefix is None:
+        _session_prefix = None
+        return
+    cleaned = prefix.strip()
+    if not cleaned:
+        _session_prefix = None
+        return
+    _session_prefix = cleaned
+
+
+def clear_session_prefix() -> None:
+    """Clear the global session prefix."""
+    global _session_prefix
+    _session_prefix = None
+
+
+def _generate_session_id(default_prefix: str) -> str:
+    prefix = _session_prefix or default_prefix
+    return f"{prefix}-{uuid7()}"
 
 
 async def resolve_session_id(request: Request, payload_user: str | None, settings: Settings) -> str:
@@ -47,11 +72,11 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
         if token:
             with _token_lock:
                 if token not in _token_session_map:
-                    _token_session_map[token] = f"session-{uuid7()}"
+                    _token_session_map[token] = _generate_session_id("session")
                 return _token_session_map[token]
 
     # 4. Fallback to UUID
-    return f"anon-{uuid7()}"
+    return _generate_session_id("anon")
 
 
 def clear_token_map() -> None:

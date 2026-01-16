@@ -12,7 +12,7 @@ from albicilla.config import Settings
 from albicilla.logging import sanitize_session_id
 from albicilla.models import ChatCompletionRequest, ChatCompletionMessage
 from albicilla.responders import build_response
-from albicilla.session import clear_token_map
+from albicilla.session import clear_session_prefix, clear_token_map
 from albicilla.upstream import UpstreamResponse
 
 
@@ -63,6 +63,7 @@ def mock_upstream():
 def client(settings: Settings, mock_upstream) -> TestClient:
     """Create a test client with configured app and mocked upstream."""
     clear_token_map()
+    clear_session_prefix()
     app = create_app(settings)
     return TestClient(app)
 
@@ -252,6 +253,48 @@ class TestSessionResolution:
         names = {path.name for path in all_logs}
         assert len(names) == 2
         assert initial_name in names
+
+    def test_session_prefix_updates_generated_ids(
+        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    ):
+        """POST /sessions with session_prefix updates generated session IDs."""
+        reset_response = client.post("/sessions", json={"session_prefix": "client"})
+        assert reset_response.status_code == 200
+
+        response = client.post("/v1/chat/completions", json=minimal_payload)
+        assert response.status_code == 200
+
+        log_files = list(temp_log_dir.rglob("*.jsonl"))
+        assert len(log_files) == 1
+        assert "client-" in log_files[0].name
+
+    @pytest.mark.parametrize(
+        "payload",
+        [{"session_prefix": None}, {"session_prefix": ""}, {"session_prefix": "   "}],
+    )
+    def test_session_prefix_can_be_cleared(
+        self,
+        client: TestClient,
+        minimal_payload: dict,
+        temp_log_dir: Path,
+        payload: dict,
+    ):
+        """POST /sessions with null/blank session_prefix clears the override."""
+        set_response = client.post("/sessions", json={"session_prefix": "client"})
+        assert set_response.status_code == 200
+
+        response = client.post("/v1/chat/completions", json=minimal_payload)
+        assert response.status_code == 200
+
+        clear_response = client.post("/sessions", json=payload)
+        assert clear_response.status_code == 200
+
+        response = client.post("/v1/chat/completions", json=minimal_payload)
+        assert response.status_code == 200
+
+        names = {path.name for path in temp_log_dir.rglob("*.jsonl")}
+        assert any("client-" in name for name in names)
+        assert any("anon-" in name for name in names)
 
 
 class TestUpstreamErrors:

@@ -76,6 +76,14 @@ class ChatCompletionRequest(BaseModel):
     model_config = {"extra": "allow"}  # Allow unknown fields for logging completeness
 
 
+class SessionPrefixRequest(BaseModel):
+    """Payload for updating the generated session ID prefix."""
+
+    session_prefix: str | None = Field(
+        None, description="Optional prefix for generated session IDs."
+    )
+
+
 # --- Response Models ---
 
 
