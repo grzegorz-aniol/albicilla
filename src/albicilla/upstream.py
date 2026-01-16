@@ -206,10 +206,12 @@ async def forward_request(
 
     # Debug logging for header forwarding
     auth_header = headers.get("authorization") or headers.get("Authorization")
-    auth_preview = f"{auth_header[:20]}..." if auth_header and len(auth_header) > 20 else auth_header
     logger.debug(f"Original headers keys: {list(request_headers.keys()) if request_headers else []}")
     logger.debug(f"Forwarding headers keys: {list(headers.keys())}")
-    logger.debug(f"Authorization header: {auth_preview}")
+    if auth_header:
+        logger.debug("Authorization header set for upstream request")
+    else:
+        logger.debug("Authorization header missing for upstream request")
 
     # Prepare request body - exclude None values for cleaner requests
     request_data = payload.model_dump(mode="json", exclude_none=True)
@@ -344,4 +346,3 @@ async def forward_streaming_request(
             await client.aclose()
 
     return byte_iterator(), context
-

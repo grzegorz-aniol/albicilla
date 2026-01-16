@@ -64,8 +64,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Debug: log authorization header
         auth_header = request_headers.get("authorization")
-        auth_preview = f"{auth_header[:30]}..." if auth_header and len(auth_header) > 30 else auth_header
-        logger.debug(f"[{session_id}] Received Authorization header: {auth_preview}")
+        if auth_header:
+            logger.debug(f"[{session_id}] Authorization header provided")
+        else:
+            logger.debug(f"[{session_id}] Authorization header missing")
 
         # Log incoming request
         model = payload.model or settings.default_model
