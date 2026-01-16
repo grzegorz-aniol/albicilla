@@ -5,10 +5,10 @@ default:
 
 # Run the OpenAI-compatible logging proxy
 run-proxy:
-	LOGURU_LEVEL=DEBUG uv run albicilla-proxy -u http://localhost:1234
+	LOGURU_LEVEL=DEBUG albicilla-proxy -u http://localhost:1234
 
 run-proxy-openai:
-	LOGURU_LEVEL=DEBUG uv run albicilla-proxy -u https://api.openai.com
+	LOGURU_LEVEL=DEBUG albicilla-proxy -u https://api.openai.com
 
 # Run all tests
 test: test-all

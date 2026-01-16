@@ -26,7 +26,7 @@ class ToolCall(BaseModel):
 class ChatCompletionMessage(BaseModel):
     """A message in the chat completion request."""
 
-    role: Literal["system", "user", "assistant", "tool"]
+    role: Literal["system", "user", "assistant", "tool", "developer"]
     content: str | list[Any] | None = None
     name: str | None = None
     tool_calls: list[ToolCall] | None = None
@@ -118,4 +118,3 @@ class LogEntry(BaseModel):
     session_id: str
     request: dict[str, Any]
     response: dict[str, Any]
-
