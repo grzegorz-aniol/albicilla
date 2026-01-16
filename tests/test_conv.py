@@ -427,6 +427,18 @@ class TestProcessSession:
         assert result.messages[1]["role"] == "assistant"
         assert result.messages[1]["content"] == "Hi there!"
 
+    def test_developer_message_normalized(self):
+        entry = self._make_log_entry(
+            messages=[
+                {"role": "developer", "content": "Follow policy."},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+        result = process_session([entry], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == "Follow policy."
+
     def test_empty_session(self):
         result = process_session([])
         assert result is None

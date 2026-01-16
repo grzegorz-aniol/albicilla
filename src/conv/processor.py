@@ -84,6 +84,10 @@ def process_session(
             session=last_entry.session_id,
         )
 
+    for message in messages:
+        if message.get("role") == "developer":
+            message["role"] = "system"
+
     # Transform tool calls if enabled
     if json_tool_calls:
         messages = transform_messages(messages)
@@ -113,6 +117,8 @@ def transform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             transformed.append(cleaned)
 
     return transformed
+
+
 
 
 def _transform_assistant_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
