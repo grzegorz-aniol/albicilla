@@ -211,7 +211,7 @@ class TestSessionResolution:
         # Should have only one log file (same session)
         log_files = list(temp_log_dir.rglob("*.jsonl"))
         assert len(log_files) == 1
-        assert "bearer-" in log_files[0].name
+        assert "session-" in log_files[0].name
 
     def test_uuid_fallback(
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path

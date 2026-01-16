@@ -240,7 +240,7 @@ class TestIntegration:
         assert resp2.status_code == 200
 
         # Both should go to same log file (bearer-* pattern)
-        bearer_logs = list(server["log_dir"].rglob("bearer-*.jsonl"))
+        bearer_logs = list(server["log_dir"].rglob("session-*.jsonl"))
         assert len(bearer_logs) == 1
 
         # Should have 2 entries
