@@ -55,9 +55,9 @@ class StreamingContext:
     """Context for streaming response with buffered content for logging."""
 
     headers: dict[str, str]
-    content_parts: list[str] = field(default_factory=list)
     first_chunk: dict | None = None
     last_chunk: dict | None = None
+    choices: dict[int, "ChoiceAccumulator"] = field(default_factory=dict)
     _line_buffer: str = ""
 
     def process_chunk(self, chunk: bytes) -> None:
@@ -92,22 +92,21 @@ class StreamingContext:
                 self.first_chunk = chunk_data
             self.last_chunk = chunk_data
 
-            # Extract delta content
+            # Extract deltas across all choices
             if choices := chunk_data.get("choices"):
-                if delta := choices[0].get("delta"):
-                    if content := delta.get("content"):
-                        self.content_parts.append(content)
+                for choice in choices:
+                    index = int(choice.get("index", 0))
+                    accumulator = self.choices.setdefault(index, ChoiceAccumulator())
+                    if delta := choice.get("delta"):
+                        accumulator.add_delta(delta)
+                    if (finish_reason := choice.get("finish_reason")) is not None:
+                        accumulator.finish_reason = finish_reason
         except json.JSONDecodeError:
             pass
 
-    def _get_finish_reason(self) -> str | None:
-        """Safely extract finish_reason from the last chunk."""
-        if not self.last_chunk:
-            return None
-        choices = self.last_chunk.get("choices", [])
-        if not choices:
-            return None
-        return choices[0].get("finish_reason")
+    def content_part_count(self) -> int:
+        """Count the buffered content parts across all choices."""
+        return sum(len(choice.content_parts) for choice in self.choices.values())
 
     def build_complete_response(self) -> dict[str, Any]:
         """Build a complete response from buffered chunks.
@@ -117,24 +116,21 @@ class StreamingContext:
         if not self.first_chunk:
             return {}
 
-        # Concatenate without separators - exact original content
-        full_content = "".join(self.content_parts)
+        choices = [
+            {
+                "index": index,
+                "message": accumulator.build_message(),
+                "finish_reason": accumulator.finish_reason,
+            }
+            for index, accumulator in sorted(self.choices.items())
+        ]
 
         response: dict[str, Any] = {
             "id": self.first_chunk.get("id"),
             "object": "chat.completion",
             "created": self.first_chunk.get("created"),
             "model": self.first_chunk.get("model"),
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": full_content,
-                    },
-                    "finish_reason": self._get_finish_reason(),
-                }
-            ],
+            "choices": choices,
         }
 
         # Include usage if present in last chunk (OpenAI includes it with stream_options)
@@ -142,6 +138,113 @@ class StreamingContext:
             response["usage"] = usage
 
         return response
+
+
+@dataclass
+class FunctionCallAccumulator:
+    """Accumulate streaming function call fields."""
+
+    name: str | None = None
+    arguments_parts: list[str] = field(default_factory=list)
+
+    def add_delta(self, data: dict[str, Any]) -> None:
+        """Apply a function call delta to the accumulator."""
+        if "name" in data:
+            self.name = data.get("name")
+        if "arguments" in data:
+            arguments = data.get("arguments")
+            if arguments is not None:
+                self.arguments_parts.append(arguments)
+
+    def build(self) -> dict[str, str] | None:
+        """Build a function call payload."""
+        if not self.name and not self.arguments_parts:
+            return None
+        return {
+            "name": self.name or "",
+            "arguments": "".join(self.arguments_parts),
+        }
+
+
+@dataclass
+class ToolCallAccumulator:
+    """Accumulate streaming tool call fields."""
+
+    id: str | None = None
+    type: str | None = None
+    function: FunctionCallAccumulator = field(default_factory=FunctionCallAccumulator)
+
+    def add_delta(self, data: dict[str, Any]) -> None:
+        """Apply a tool call delta to the accumulator."""
+        if "id" in data:
+            self.id = data.get("id")
+        if "type" in data:
+            self.type = data.get("type")
+        if (function_data := data.get("function")) and isinstance(function_data, dict):
+            self.function.add_delta(function_data)
+
+    def build(self) -> dict[str, Any] | None:
+        """Build a tool call payload."""
+        function_payload = self.function.build()
+        if not self.id and not self.type and not function_payload:
+            return None
+        return {
+            "id": self.id,
+            "type": self.type or "function",
+            "function": function_payload or {"name": "", "arguments": ""},
+        }
+
+
+@dataclass
+class ChoiceAccumulator:
+    """Accumulate streaming content and tool calls for a choice."""
+
+    role: str | None = None
+    content_parts: list[str] = field(default_factory=list)
+    tool_calls: dict[int, ToolCallAccumulator] = field(default_factory=dict)
+    function_call: FunctionCallAccumulator | None = None
+    finish_reason: str | None = None
+
+    def add_delta(self, delta: dict[str, Any]) -> None:
+        """Apply a delta update to the choice accumulator."""
+        if "role" in delta:
+            self.role = delta.get("role")
+        if "content" in delta:
+            content = delta.get("content")
+            if content is not None:
+                self.content_parts.append(content)
+        if (tool_calls := delta.get("tool_calls")) and isinstance(tool_calls, list):
+            for tool_delta in tool_calls:
+                index = int(tool_delta.get("index", 0))
+                accumulator = self.tool_calls.setdefault(index, ToolCallAccumulator())
+                if isinstance(tool_delta, dict):
+                    accumulator.add_delta(tool_delta)
+        if (function_call := delta.get("function_call")) and isinstance(function_call, dict):
+            if self.function_call is None:
+                self.function_call = FunctionCallAccumulator()
+            self.function_call.add_delta(function_call)
+
+    def build_message(self) -> dict[str, Any]:
+        """Build the message payload from accumulated deltas."""
+        content = "".join(self.content_parts) if self.content_parts else None
+        tool_calls_payload = [
+            payload
+            for _, accumulator in sorted(self.tool_calls.items())
+            if (payload := accumulator.build()) is not None
+        ]
+        function_call_payload = (
+            self.function_call.build() if self.function_call is not None else None
+        )
+
+        message: dict[str, Any] = {
+            "role": self.role or "assistant",
+            "content": content,
+        }
+        if tool_calls_payload:
+            message["tool_calls"] = tool_calls_payload
+        if function_call_payload:
+            message["function_call"] = function_call_payload
+        return message
 
 
 def filter_request_headers(headers: dict[str, str]) -> dict[str, str]:

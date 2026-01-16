@@ -109,23 +109,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         async def stream_and_log():
             """Yield bytes and log when complete."""
-            async for chunk in byte_iterator:
-                yield chunk
-
-            # Stream complete - build and log the full response
-            response_data = context.build_complete_response()
-            response_id = response_data.get("id", "unknown")
-            response_model = response_data.get("model", "unknown")
-            content_len = len(context.content_parts)
-            logger.info(
-                f"[{session_id}] ← Streaming complete: id={response_id}, model={response_model}, chunks={content_len}"
-            )
-
             try:
-                append_session_entry(settings, session_id, request_data, response_data)
-                logger.debug(f"[{session_id}] Logged streaming response to session file")
-            except IOError as e:
-                logger.error(f"[{session_id}] Failed to write log: {e}")
+                async for chunk in byte_iterator:
+                    yield chunk
+            finally:
+                response_data = context.build_complete_response()
+                response_id = response_data.get("id", "unknown") if response_data else "unknown"
+                response_model = response_data.get("model", "unknown") if response_data else "unknown"
+                content_len = context.content_part_count()
+                logger.info(
+                    f"[{session_id}] ← Streaming complete: id={response_id}, model={response_model}, chunks={content_len}"
+                )
+
+                try:
+                    append_session_entry(settings, session_id, request_data, response_data)
+                    logger.debug(f"[{session_id}] Logged streaming response to session file")
+                except IOError as e:
+                    logger.error(f"[{session_id}] Failed to write log: {e}")
 
         return StreamingResponse(
             stream_and_log(),

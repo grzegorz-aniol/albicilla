@@ -1,6 +1,6 @@
 """Session resolution for the proxy."""
 
-import asyncio
+import threading
 
 from uuid6 import uuid7
 
@@ -9,9 +9,9 @@ from fastapi import Request
 from .config import Settings
 
 # In-memory mapping from bearer token to session UUID
-# Thread-safe via asyncio.Lock
+# Thread-safe via a shared lock.
 _token_session_map: dict[str, str] = {}
-_token_lock = asyncio.Lock()
+_token_lock = threading.Lock()
 
 
 async def resolve_session_id(request: Request, payload_user: str | None, settings: Settings) -> str:
@@ -45,7 +45,7 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
     if auth_header.lower().startswith("bearer "):
         token = auth_header[7:].strip()
         if token:
-            async with _token_lock:
+            with _token_lock:
                 if token not in _token_session_map:
                     _token_session_map[token] = f"session-{uuid7()}"
                 return _token_session_map[token]
@@ -56,4 +56,5 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
 
 def clear_token_map() -> None:
     """Clear the token-to-session mapping. Useful for testing."""
-    _token_session_map.clear()
+    with _token_lock:
+        _token_session_map.clear()
