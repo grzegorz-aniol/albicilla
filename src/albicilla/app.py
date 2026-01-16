@@ -1,13 +1,13 @@
 """FastAPI application factory and router for Albicilla."""
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from .config import Settings
 from .logging import append_session_entry
 from .models import ChatCompletionRequest
-from .session import resolve_session_id
+from .session import clear_token_map, resolve_session_id
 from .upstream import (
     StreamingContext,
     UpstreamError,
@@ -175,5 +175,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health_check() -> dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
+
+    @app.post("/sessions", status_code=200)
+    async def reset_sessions() -> Response:
+        """Reset internal session mappings."""
+        clear_token_map()
+        logger.info("Cleared in-memory token-session map via /sessions endpoint")
+        return Response(status_code=200)
 
     return app

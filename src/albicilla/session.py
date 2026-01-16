@@ -1,7 +1,8 @@
 """Session resolution for the proxy."""
 
 import asyncio
-from uuid import uuid4
+
+from uuid6 import uuid7
 
 from fastapi import Request
 
@@ -46,11 +47,11 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
         if token:
             async with _token_lock:
                 if token not in _token_session_map:
-                    _token_session_map[token] = f"session-{uuid4().hex[:12]}"
+                    _token_session_map[token] = f"session-{uuid7()}"
                 return _token_session_map[token]
 
     # 4. Fallback to UUID
-    return f"anon-{uuid4().hex[:12]}"
+    return f"anon-{uuid7()}"
 
 
 def clear_token_map() -> None:

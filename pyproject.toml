@@ -5,16 +5,17 @@ description = "Albicilla - LLM passthrough proxy with JSONL logging"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.115.0",
-    "httpx>=0.27.2",
-    "jsonschema>=4.23.0",
-    "loguru>=0.7.3",
-    "pydantic-settings>=2.7.0",
-    "pytest>=9.0.2",
-    "python-dotenv>=1.2.1",
-    "typer>=0.21.1",
-    "uvicorn>=0.34.0",
-]
+     "fastapi>=0.115.0",
+     "httpx>=0.27.2",
+     "jsonschema>=4.23.0",
+     "loguru>=0.7.3",
+     "pydantic-settings>=2.7.0",
+     "pytest>=9.0.2",
+     "python-dotenv>=1.2.1",
+     "typer>=0.21.1",
+     "uvicorn>=0.34.0",
+     "uuid6>=2023.5.29",
+ ]
 packages = [
     { include = "albicilla", from = "src" },
     { include = "conv", from = "src" },

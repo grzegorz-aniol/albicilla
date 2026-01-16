@@ -224,6 +224,35 @@ class TestSessionResolution:
         assert len(log_files) == 1
         assert "anon-" in log_files[0].name
 
+    def test_reset_sessions_endpoint_generates_new_session(
+        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    ):
+        """POST /sessions clears token mapping and forces new session IDs."""
+        headers = {"Authorization": "Bearer rotate-token"}
+
+        response1 = client.post(
+            "/v1/chat/completions", json=minimal_payload, headers=headers
+        )
+        assert response1.status_code == 200
+
+        initial_logs = list(temp_log_dir.rglob("*.jsonl"))
+        assert len(initial_logs) == 1
+        initial_name = initial_logs[0].name
+
+        reset_response = client.post("/sessions")
+        assert reset_response.status_code == 200
+
+        response2 = client.post(
+            "/v1/chat/completions", json=minimal_payload, headers=headers
+        )
+        assert response2.status_code == 200
+
+        all_logs = list(temp_log_dir.rglob("*.jsonl"))
+        assert len(all_logs) == 2
+        names = {path.name for path in all_logs}
+        assert len(names) == 2
+        assert initial_name in names
+
 
 class TestUpstreamErrors:
     """Test error handling for upstream failures."""
@@ -370,4 +399,3 @@ class TestHealthCheck:
         response = client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
-
