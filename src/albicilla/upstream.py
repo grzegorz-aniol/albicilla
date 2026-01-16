@@ -329,6 +329,7 @@ async def forward_streaming_request(
         )
 
     response_headers = filter_response_headers(response.headers)
+    logger.debug(f"Upstream streaming response header keys: {list(response_headers.keys())}")
     context = StreamingContext(headers=response_headers)
 
     async def byte_iterator() -> AsyncIterator[bytes]:

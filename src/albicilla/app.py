@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # 2. Get request headers to forward
         request_headers = dict(request.headers)
+        logger.debug(f"[{session_id}] Request header keys: {list(request_headers.keys())}")
 
         # Debug: log authorization header
         auth_header = request_headers.get("authorization")
