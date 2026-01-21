@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from .config import Settings
-from .logging import append_session_entry
+from .logging import append_session_entry, configure_logging
 from .models import ChatCompletionRequest, SessionPrefixRequest
 from .session import clear_token_map, resolve_session_id, set_session_prefix
 from .upstream import (
@@ -37,6 +37,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     global _settings
     _settings = settings or Settings()
+    configure_logging(_settings.verbose)
 
     app = FastAPI(
         title="Albicilla - LLM passthrough proxy",

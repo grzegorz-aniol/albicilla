@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     port: int = 9000
     default_model: str = "gpt-4o-mini"
     response_template: str = "Proxy logged {n_messages} messages for {model}."
+    verbose: bool = False
     upstream_endpoint: str  # Required - upstream OpenAI-compatible API base URL
 
     # Constants (not configurable via env)

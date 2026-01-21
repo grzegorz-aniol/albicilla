@@ -2,6 +2,7 @@
 
 import json
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,17 @@ def sanitize_session_id(session_id: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
     # Ensure it's not empty
     return sanitized or "unknown"
+
+
+def configure_logging(verbose: bool) -> None:
+    """Configure Loguru logging level and sinks.
+
+    Args:
+        verbose: Enable DEBUG logging when True, otherwise INFO.
+    """
+    logger.remove()
+    level = "DEBUG" if verbose else "INFO"
+    logger.add(sys.stderr, level=level)
 
 
 def get_log_path(settings: Settings, session_id: str) -> Path:

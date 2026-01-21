@@ -7,7 +7,9 @@ import typer
 import uvicorn
 from loguru import logger
 
+from .app import create_app
 from .config import Settings
+from .logging import configure_logging
 
 app = typer.Typer(
     name="albicilla",
@@ -35,19 +37,48 @@ def serve(
     ] = "gpt-4o-mini",
     log_root: Annotated[
         Path,
-        typer.Option("--log-root", "-l", help="Root directory for log files."),
+        typer.Option(
+            "--log-root",
+            "-l",
+            help="Root directory for log files.",
+            envvar="PROXY_LOG_ROOT",
+        ),
     ] = Path("./proxy_logs"),
     host: Annotated[
         str,
-        typer.Option("--host", "-h", help="Host to bind the server to."),
+        typer.Option(
+            "--host",
+            "-h",
+            help="Host to bind the server to.",
+            envvar="PROXY_HOST",
+        ),
     ] = "0.0.0.0",
     port: Annotated[
         int,
-        typer.Option("--port", "-p", help="Port to bind the server to."),
+        typer.Option(
+            "--port",
+            "-p",
+            help="Port to bind the server to.",
+            envvar="PROXY_PORT",
+        ),
     ] = 9000,
     reload: Annotated[
         bool,
-        typer.Option("--reload", "-r", help="Enable auto-reload for development."),
+        typer.Option(
+            "--reload",
+            "-r",
+            help="Enable auto-reload for development.",
+            envvar="PROXY_RELOAD",
+        ),
+    ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Enable debug logging.",
+            envvar="PROXY_VERBOSE",
+        ),
     ] = False,
 ) -> None:
     """Start the OpenAI-compatible logging proxy server."""
@@ -58,8 +89,10 @@ def serve(
         log_root=log_root,
         host=host,
         port=port,
+        verbose=verbose,
     )
 
+    configure_logging(settings.verbose)
     logger.info(f"Starting proxy server on {settings.host}:{settings.port}")
     logger.info(f"Upstream endpoint: {settings.upstream_endpoint}")
     logger.info(f"Default model: {settings.default_model}")
@@ -68,22 +101,12 @@ def serve(
     # Ensure log directory exists
     settings.log_root.mkdir(parents=True, exist_ok=True)
 
-    # We need to pass settings to the app factory
-    # Store settings in environment for the factory to pick up
-    import os
-
-    os.environ["PROXY_UPSTREAM_ENDPOINT"] = settings.upstream_endpoint
-    os.environ["PROXY_DEFAULT_MODEL"] = settings.default_model
-    os.environ["PROXY_LOG_ROOT"] = str(settings.log_root)
-    os.environ["PROXY_HOST"] = settings.host
-    os.environ["PROXY_PORT"] = str(settings.port)
-
+    app_instance = create_app(settings)
     uvicorn.run(
-        "albicilla.app:create_app",
+        app_instance,
         host=settings.host,
         port=settings.port,
         reload=reload,
-        factory=True,
     )
 
 
