@@ -116,6 +116,7 @@ def test_output_jsonl_records(
     tool_schema_validator: Draft202012Validator,
 ) -> None:
     """Ensure each JSONL payload matches expectations."""
+    print(f"Processing output file: {jsonl_path}")
     has_payload = False
 
     for line_number, payload in _iter_jsonl(jsonl_path):
