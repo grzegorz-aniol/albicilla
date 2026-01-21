@@ -43,7 +43,7 @@ Dlatego „albicilla” ma również CLI do konwersji logów do finalnego format
 
 Tak. Natomiast dane powinny być w formacie opisanym w repo Albicilla: https://github.com/grzegorz-aniol/albicilla/blob/main/conv-format.md.
 
-Jeżeli masz możliwość wyeksportowania takich danych na potrzeby Bielika z prawdziwych systemów, zgłoś się do fundacji — chętnie pozyskamy takie dane w sposób formalny.
+Jeżeli masz możliwość wyeksportowania takich danych na potrzeby Bielika z prawdziwych systemów, zgłoś się do fundacji [SpeakLeash](https://speakleash.org/) — fundacja chętnie pozyska takie dane w sposób formalny.
 
 ## Na co powinienem zwrócić uwagę?
 
