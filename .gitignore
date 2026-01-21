@@ -2,5 +2,6 @@
 
 /output/
 /proxy_logs/
+/good_logs/
 
 .env

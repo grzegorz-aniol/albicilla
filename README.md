@@ -130,6 +130,10 @@ print(weather_bot.run("Any storms expected?"))
 
 Use the bundled `albicilla-conv` CLI to turn captured proxy logs into JSONL datasets that can be fed to fine-tuning or analytics workflows. All commands expect `--logs` to point at the directory that the proxy writes to and `--output` to target a directory where converted files will be stored.
 
+#### Expected log format
+
+You can find an example of the expected output format here : [./conv-format.md](./conv-format.md)
+
 #### Output schema (flattened by default)
 
 Each processed record mirrors the OpenAI fine-tuning schema but is normalized so downstream tooling does not need to inspect raw request envelopes:
