@@ -1,6 +1,6 @@
 """FastAPI application factory and router for Albicilla."""
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
@@ -44,6 +44,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="A proxy that forwards requests to upstream OpenAI-compatible APIs and logs to JSONL files.",
         version="0.1.0",
     )
+
+    def _build_upstream_error_response(error: UpstreamError) -> Response:
+        body = error.body if error.body is not None else (error.detail or "")
+        headers = dict(error.headers)
+        return Response(content=body, status_code=error.status_code, headers=headers)
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(
@@ -105,8 +110,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload, settings, request_headers
             )
         except UpstreamError as e:
-            logger.warning(f"[{session_id}] ✗ Upstream error: {e.status_code} {e.detail[:100]}")
-            raise HTTPException(status_code=e.status_code, detail=e.detail, headers=e.headers) from e
+            logger.warning(
+                f"[{session_id}] ✗ Upstream error: {e.status_code} {e.excerpt()}"
+            )
+            return _build_upstream_error_response(e)
 
         async def stream_and_log():
             """Yield bytes and log when complete."""
@@ -149,8 +156,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             upstream_response = await forward_request(payload, settings, request_headers)
         except UpstreamError as e:
-            logger.warning(f"[{session_id}] ✗ Upstream error: {e.status_code} {e.detail[:100]}")
-            raise HTTPException(status_code=e.status_code, detail=e.detail, headers=e.headers) from e
+            logger.warning(
+                f"[{session_id}] ✗ Upstream error: {e.status_code} {e.excerpt()}"
+            )
+            return _build_upstream_error_response(e)
 
         response_data = upstream_response.data
         response_headers = upstream_response.headers

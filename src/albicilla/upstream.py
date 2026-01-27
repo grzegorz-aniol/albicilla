@@ -35,11 +35,39 @@ EXCLUDED_RESPONSE_HEADERS = {
 class UpstreamError(Exception):
     """Error from upstream service."""
 
-    def __init__(self, status_code: int, detail: str, headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str | None = None,
+        headers: dict[str, str] | None = None,
+        body: bytes | str | None = None,
+    ) -> None:
         self.status_code = status_code
-        self.detail = detail
         self.headers = headers or {}
-        super().__init__(f"Upstream error {status_code}: {detail}")
+        self.body = self._ensure_body_bytes(body, detail)
+        self.detail = detail if detail is not None else self._body_as_text()
+        super().__init__(f"Upstream error {status_code}: {self.detail}")
+
+    @staticmethod
+    def _ensure_body_bytes(body: bytes | str | None, detail: str | None) -> bytes | None:
+        if body is not None:
+            return body.encode("utf-8") if isinstance(body, str) else body
+        if detail is None:
+            return None
+        return detail.encode("utf-8")
+
+    def _body_as_text(self) -> str:
+        if self.body is None:
+            return ""
+        return self.body.decode("utf-8", errors="ignore")
+
+    def excerpt(self, limit: int = 100) -> str:
+        """Return a shortened preview of the upstream error."""
+        if self.detail:
+            return self.detail[:limit]
+        if self.body is None:
+            return ""
+        return self._body_as_text()[:limit]
 
 
 @dataclass
@@ -351,7 +379,12 @@ async def forward_request(
 
     if response.status_code >= 400:
         logger.warning(f"Upstream returned {response.status_code}: {response.text[:500]}")
-        raise UpstreamError(response.status_code, response.text, response_headers)
+        raise UpstreamError(
+            response.status_code,
+            detail=response.text,
+            headers=response_headers,
+            body=response.content,
+        )
 
     try:
         return UpstreamResponse(data=response.json(), headers=response_headers)
@@ -421,14 +454,15 @@ async def forward_streaming_request(
         raise UpstreamError(502, f"Upstream request failed: {e}") from e
 
     if response.status_code >= 400:
-        error_text = await response.aread()
+        error_bytes = await response.aread()
         await response.aclose()
         await client.aclose()
-        logger.warning(f"Upstream returned {response.status_code}: {error_text[:500]}")
+        logger.warning(f"Upstream returned {response.status_code}: {error_bytes[:500]}")
         raise UpstreamError(
             response.status_code,
-            error_text.decode("utf-8", errors="ignore"),
-            filter_response_headers(response.headers),
+            detail=error_bytes.decode("utf-8", errors="ignore"),
+            headers=filter_response_headers(response.headers),
+            body=error_bytes,
         )
 
     response_headers = filter_response_headers(response.headers)
