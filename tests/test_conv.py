@@ -2,14 +2,19 @@
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from conv.models import ConversationRecord, LogEntry, Message, RequestPayload, ResponseChoice, ResponsePayload, ToolDefinition
 from conv.processor import (
+    count_tool_call_requests,
     coerce_arguments,
+    extract_session_name_from_path,
     extract_tool_schemas,
     process_session,
+    process_logs_directory_with_tool_usage,
+    process_session_with_stats,
     serialize_tool_calls,
     serialize_tool_result,
     transform_messages,
@@ -452,3 +457,161 @@ class TestProcessSession:
         assert result is not None
         assert len(result.tools) == 1
         assert result.tools[0]["name"] == "my_tool"
+
+
+class TestToolUsageCounting:
+    def test_counts_tool_calls_from_assistant_tool_calls(self):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}, {"id": "2"}]},
+            {"role": "tool", "content": "ok", "tool_call_id": "1"},
+            {"role": "assistant", "content": "done"},
+        ]
+        assert count_tool_call_requests(messages) == 2
+
+    def test_counts_tool_calls_from_inline_tool_call_tags(self):
+        messages = [
+            {"role": "assistant", "content": "<tool_call>{}</tool_call>\n<tool_call>{}</tool_call>"},
+        ]
+        assert count_tool_call_requests(messages) == 2
+
+    def test_extract_session_name_strips_uuid_suffix(self):
+        path = Path("arxiv-python-019be09e-1984-785b-9ef8-5eb623db4562.jsonl")
+        assert extract_session_name_from_path(path) == "arxiv-python"
+
+    def test_process_session_with_stats_keeps_count_before_transform(self):
+        entry = LogEntry(
+            timestamp=datetime.now(timezone.utc),
+            session_id="session-1",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=[
+                    Message(role="user", content="Hello"),
+                    Message(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "tool_a", "arguments": "{}"},
+                            }
+                        ],
+                    ),
+                    Message(role="tool", content="{}", tool_call_id="call_1"),
+                ],
+            ),
+            response=ResponsePayload(
+                id="resp-1",
+                choices=[ResponseChoice(index=0, message=Message(role="assistant", content="Done"))],
+            ),
+        )
+
+        record, tool_call_count = process_session_with_stats([entry], json_tool_calls=True)
+        assert record is not None
+        assert tool_call_count == 1
+        assert "<tool_call>" in record.messages[1]["content"]
+
+    def test_process_logs_directory_with_tool_usage(self, tmp_path: Path):
+        day_dir = tmp_path / "2026-01-21"
+        day_dir.mkdir()
+        session_file_1 = day_dir / "arxiv-python-019be09e-1984-785b-9ef8-5eb623db4562.jsonl"
+        session_file_2 = day_dir / "arxiv-python-019be09e-1984-785b-9ef8-5eb623db4563.jsonl"
+
+        tools_1 = [
+            ToolDefinition(type="function", function={"name": "tool_a", "parameters": {}}),
+            ToolDefinition(type="function", function={"name": "tool_b", "parameters": {}}),
+        ]
+        tools_2 = [
+            ToolDefinition(type="function", function={"name": "tool_a", "parameters": {}}),
+            ToolDefinition(type="function", function={"name": "tool_c", "parameters": {}}),
+        ]
+
+        entry = LogEntry(
+            timestamp=datetime(2026, 1, 21, 12, 0, tzinfo=timezone.utc),
+            session_id="session-1",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=[
+                    Message(role="user", content="Hi"),
+                    Message(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "tool_a", "arguments": "{}"},
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {"name": "tool_b", "arguments": "{}"},
+                            },
+                        ],
+                    ),
+                    Message(role="tool", content="{}", tool_call_id="call_1"),
+                    Message(role="tool", content="{}", tool_call_id="call_2"),
+                ],
+                tools=tools_1,
+            ),
+            response=ResponsePayload(
+                id="resp-1",
+                choices=[ResponseChoice(index=0, message=Message(role="assistant", content="Done"))],
+            ),
+        )
+        session_file_1.write_text(
+            json.dumps(entry.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        entry_2 = entry.model_copy(
+            update={
+                "session_id": "session-2",
+                "request": entry.request.model_copy(update={"tools": tools_2}),
+            }
+        )
+        session_file_2.write_text(
+            json.dumps(entry_2.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        records_by_date, tool_usage = process_logs_directory_with_tool_usage(tmp_path)
+        assert len(records_by_date) == 1
+        assert len(tool_usage) == 1
+        assert tool_usage[0].date.isoformat() == "2026-01-21"
+        assert tool_usage[0].session == "arxiv-python"
+        assert tool_usage[0].session_count == 2
+        assert tool_usage[0].tool_call_count == 4
+        assert tool_usage[0].tool_definition_count == 3
+
+
+class TestToolUsageReportWriter:
+    def test_writes_csv(self, tmp_path: Path):
+        from conv.main import write_tool_usage_report
+        from conv.models import SessionToolUsageRow
+
+        output_path = tmp_path / "tool-usage.csv"
+        write_tool_usage_report(
+            [
+                SessionToolUsageRow(
+                    date=datetime(2026, 1, 21, tzinfo=timezone.utc).date(),
+                    session="arxiv",
+                    session_count=5,
+                    tool_call_count=3,
+                    tool_definition_count=2,
+                ),
+                SessionToolUsageRow(
+                    date=datetime(2026, 1, 22, tzinfo=timezone.utc).date(),
+                    session="yt",
+                    session_count=1,
+                    tool_call_count=0,
+                    tool_definition_count=0,
+                ),
+            ],
+            output_path,
+        )
+
+        content = output_path.read_text(encoding="utf-8").splitlines()
+        assert content[0] == "date,scenario,session_count,tool_call_count,tool_definition_count"
+        assert "2026-01-21,arxiv,5,3,2" in content
+        assert "2026-01-22,yt,1,0,0" in content

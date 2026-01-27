@@ -9,11 +9,12 @@ from pathlib import Path
 import typer
 from loguru import logger
 
-from .models import ConversationRecord
-from .processor import process_logs_directory
+from .models import ConversationRecord, SessionToolUsageRow
+from .processor import process_logs_directory_with_tool_usage
 
 DEFAULT_LOGS_DIR = Path.cwd() / "proxy_logs"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "output"
+DEFAULT_TOOL_REPORT_NAME = "tool-usage.csv"
 
 app = typer.Typer(
     help="Process proxy logs and export conversations as JSONL.",
@@ -47,6 +48,16 @@ def process(
         "-j/-J",
         help="Transform tool_calls into inline JSON format",
     ),
+    tool_report: bool = typer.Option(
+        True,
+        "--tool-report/--no-tool-report",
+        help="Write a per-session tool usage report",
+    ),
+    tool_report_path: Path | None = typer.Option(
+        None,
+        "--tool-report-path",
+        help="Path for the tool usage report (defaults to output/tool-usage.jsonl)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -73,7 +84,9 @@ def process(
 
     # Process all sessions
     logger.info("Processing logs from {path}", path=logs_dir)
-    records_by_date = process_logs_directory(logs_dir, json_tool_calls=json_tool_calls)
+    records_by_date, tool_usage = process_logs_directory_with_tool_usage(
+        logs_dir, json_tool_calls=json_tool_calls
+    )
 
     if not records_by_date:
         typer.echo("No sessions found to process.")
@@ -94,6 +107,11 @@ def process(
         typer.echo(
             f"Wrote {total_records} records across {files_written} files to {output_dir}"
         )
+
+    if tool_report:
+        report_path = tool_report_path or (output_dir / DEFAULT_TOOL_REPORT_NAME)
+        write_tool_usage_report(tool_usage, report_path)
+        typer.echo(f"Wrote tool usage report to {report_path}")
 
 
 def write_records_to_file(records: list[ConversationRecord], output_path: Path) -> None:
@@ -122,6 +140,25 @@ def write_per_day(
         files_written += 1
 
     return files_written
+
+
+def write_tool_usage_report(tool_usage: list[SessionToolUsageRow], output_path: Path) -> None:
+    """Write a per-session tool usage report as CSV (comma-separated)."""
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write("date,scenario,session_count,tool_call_count,tool_definition_count\n")
+        for row in sorted(tool_usage, key=lambda item: (item.date, item.session)):
+            scenario = _csv_escape(row.session)
+            handle.write(
+                f"{row.date.isoformat()},{scenario},{row.session_count},{row.tool_call_count},{row.tool_definition_count}\n"
+            )
+
+
+def _csv_escape(value: str) -> str:
+    """Escape a CSV field without using the csv module."""
+    if any(ch in value for ch in (",", "\"", "\n", "\r")):
+        escaped = value.replace('"', '""')
+        return f'"{escaped}"'
+    return value
 
 
 def main() -> None:

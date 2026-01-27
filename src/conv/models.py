@@ -1,6 +1,6 @@
 """Pydantic models for conversation log processing."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -90,3 +90,12 @@ class ConversationRecord(BaseModel):
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]]
 
+
+class SessionToolUsageRow(BaseModel):
+    """Tool usage report row for a single processed session."""
+
+    date: date
+    session: str
+    session_count: int
+    tool_call_count: int
+    tool_definition_count: int

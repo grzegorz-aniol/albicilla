@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-all test-output-integrity run-proxy
+.PHONY: test test-unit test-integration test-all test-output-integrity run-proxy convert conv
 
 default:
 	@echo "Specify a target"

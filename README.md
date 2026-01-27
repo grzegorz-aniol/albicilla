@@ -151,6 +151,14 @@ uv run albicilla-conv --logs ./proxy_logs --output ./output
 
 This creates day-based subdirectories inside `./output` and keeps the tool call payloads exactly as captured by the proxy.
 
+By default the converter also writes a per-day tool usage report (aggregated per scenario within each date) to `output/tool-usage.csv` containing:
+
+- `date` (derived from the `proxy_logs/YYYY-MM-DD/` folder name)
+- `scenario` (derived from the log filename prefix)
+- `session_count` (number of session files aggregated for that scenario on that day)
+- `tool_call_count` (assistant-side tool call requests only, summed across all sessions of that scenario on that day)
+- `tool_definition_count` (unique tool definition names available across all sessions of that scenario on that day)
+
 ### Enable tool structured output (JSON tool calls)
 
 ```bash

@@ -314,7 +314,7 @@ class TestUpstreamErrors:
 
             response = client.post("/v1/chat/completions", json=minimal_payload)
             assert response.status_code == 503
-            assert "Service unavailable" in response.json()["detail"]
+            assert response.text == "Service unavailable"
 
     def test_upstream_timeout_returns_504(
         self, settings: Settings, minimal_payload: dict
@@ -345,6 +345,7 @@ class TestUpstreamErrors:
 
             response = client.post("/v1/chat/completions", json=minimal_payload)
             assert response.status_code == 502
+            assert response.text == "Cannot connect to upstream"
 
 
 class TestSanitization:

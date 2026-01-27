@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
@@ -10,7 +11,11 @@ from typing import Any
 
 from loguru import logger
 
-from .models import ConversationRecord, LogEntry, Message, ToolDefinition
+from .models import ConversationRecord, LogEntry, SessionToolUsageRow, ToolDefinition
+
+_UUID_SUFFIX = re.compile(
+    r"^(?P<prefix>.+)-(?P<uuid>[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$"
+)
 
 
 def read_session_file(path: Path) -> list[LogEntry]:
@@ -95,6 +100,23 @@ def process_session(
     return ConversationRecord(messages=messages, tools=tools)
 
 
+def process_session_with_stats(
+    entries: list[LogEntry],
+    json_tool_calls: bool = False,
+) -> tuple[ConversationRecord | None, int]:
+    """Process a session and return the record plus tool-call request count."""
+    record = process_session(entries, json_tool_calls=False)
+    if record is None:
+        return None, 0
+
+    tool_call_count = count_tool_call_requests(record.messages)
+
+    if json_tool_calls:
+        record = ConversationRecord(messages=transform_messages(record.messages), tools=record.tools)
+
+    return record, tool_call_count
+
+
 def transform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Transform messages to use inline JSON format for tool calls and results.
@@ -117,6 +139,46 @@ def transform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             transformed.append(cleaned)
 
     return transformed
+
+
+def count_tool_call_requests(messages: list[dict[str, Any]]) -> int:
+    """Count tool-call requests in a normalized session message list.
+
+    Counts assistant-side tool invocations only (skips tool result messages).
+    """
+    count = 0
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            count += len(tool_calls)
+            continue
+
+        function_call = message.get("function_call")
+        if isinstance(function_call, dict):
+            count += 1
+            continue
+
+        content = message.get("content")
+        if isinstance(content, str):
+            count += content.count("<tool_call>")
+
+    return count
+
+
+def extract_session_name_from_path(session_path: Path) -> str:
+    """Extract a stable session name from a log filename.
+
+    For filenames like `arxiv-python-<uuid>.jsonl`, returns `arxiv-python`.
+    Otherwise returns the filename stem.
+    """
+    stem = session_path.stem
+    match = _UUID_SUFFIX.match(stem)
+    if match:
+        return match.group("prefix")
+    return stem
 
 
 
@@ -306,3 +368,68 @@ def process_logs_directory(
         records_by_date[session_date].append(record)
 
     return records_by_date
+
+
+def process_logs_directory_with_tool_usage(
+    logs_dir: Path,
+    json_tool_calls: bool = False,
+) -> tuple[dict[date, list[ConversationRecord]], list[SessionToolUsageRow]]:
+    """Process all sessions and also return a per-session tool usage report."""
+    records_by_date: dict[date, list[ConversationRecord]] = {}
+    tool_calls_by_date_and_scenario: dict[tuple[date, str], int] = {}
+    tool_names_by_date_and_scenario: dict[tuple[date, str], set[str]] = {}
+    session_count_by_date_and_scenario: dict[tuple[date, str], int] = {}
+
+    for session_path in iter_session_files(logs_dir):
+        logger.debug("Processing session file: {path}", path=session_path)
+
+        entries = read_session_file(session_path)
+        if not entries:
+            logger.warning("Empty or invalid session file: {path}", path=session_path)
+            continue
+
+        record, tool_call_count = process_session_with_stats(
+            entries, json_tool_calls=json_tool_calls
+        )
+        if record is None:
+            continue
+
+        session_date = extract_date_from_path(session_path, logs_dir)
+        if session_date is None:
+            session_date = entries[0].timestamp.date()
+
+        records_by_date.setdefault(session_date, []).append(record)
+
+        scenario = extract_session_name_from_path(session_path)
+        key = (session_date, scenario)
+        tool_calls_by_date_and_scenario[key] = tool_calls_by_date_and_scenario.get(key, 0) + tool_call_count
+        session_count_by_date_and_scenario[key] = session_count_by_date_and_scenario.get(key, 0) + 1
+        if key not in tool_names_by_date_and_scenario:
+            tool_names_by_date_and_scenario[key] = set()
+        tool_names_by_date_and_scenario[key].update(extract_tool_names(record.tools))
+
+    keys = set(tool_calls_by_date_and_scenario) | set(tool_names_by_date_and_scenario)
+    report_rows = [
+        SessionToolUsageRow(
+            date=day,
+            session=scenario,
+            session_count=session_count_by_date_and_scenario.get((day, scenario), 0),
+            tool_call_count=tool_calls_by_date_and_scenario.get((day, scenario), 0),
+            tool_definition_count=len(
+                tool_names_by_date_and_scenario.get((day, scenario), set())
+            ),
+        )
+        for (day, scenario) in sorted(keys)
+    ]
+
+    return records_by_date, report_rows
+
+
+def extract_tool_names(tools: list[dict[str, Any]]) -> set[str]:
+    """Extract tool names from a flattened `ConversationRecord.tools` list."""
+    names: set[str] = set()
+    for tool in tools:
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
