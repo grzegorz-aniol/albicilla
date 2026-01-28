@@ -1,14 +1,13 @@
 """Session resolution for the proxy."""
 
 import threading
-
-from uuid6 import uuid7
+import time
 
 from fastapi import Request
 
 from .config import Settings
 
-# In-memory mapping from bearer token to session UUID
+# In-memory mapping from bearer token to a generated session ID
 # Thread-safe via a shared lock.
 _token_session_map: dict[str, str] = {}
 _token_lock = threading.Lock()
@@ -36,7 +35,10 @@ def clear_session_prefix() -> None:
 
 def _generate_session_id(default_prefix: str) -> str:
     prefix = _session_prefix or default_prefix
-    return f"{prefix}-{uuid7()}"
+    # Use a fixed-width, digits-only unix timestamp suffix for stable
+    # lexicographic sorting (and to avoid mixed alpha/decimal UUID strings).
+    suffix = f"{time.time_ns():019d}"
+    return f"{prefix}-{suffix}"
 
 
 async def resolve_session_id(request: Request, payload_user: str | None, settings: Settings) -> str:
@@ -46,7 +48,7 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
     1. `user` field from request payload
     2. X-Session-Id header
     3. Bearer token mapping (persists in-memory for process lifetime)
-    4. UUID fallback (per request)
+    4. Timestamp fallback (per request)
 
     Args:
         request: The FastAPI request object.
@@ -75,7 +77,7 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
                     _token_session_map[token] = _generate_session_id("session")
                 return _token_session_map[token]
 
-    # 4. Fallback to UUID
+    # 4. Fallback to a generated timestamp-based ID
     return _generate_session_id("anon")
 
 

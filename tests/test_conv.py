@@ -475,9 +475,13 @@ class TestToolUsageCounting:
         ]
         assert count_tool_call_requests(messages) == 2
 
-    def test_extract_session_name_strips_uuid_suffix(self):
-        path = Path("arxiv-python-019be09e-1984-785b-9ef8-5eb623db4562.jsonl")
+    def test_extract_session_name_strips_timestamp_suffix(self):
+        path = Path("arxiv-python-1769035200000000001.jsonl")
         assert extract_session_name_from_path(path) == "arxiv-python"
+
+    def test_extract_session_name_strips_uuid_suffix(self):
+        path = Path("market-brief-019c0179-fae3-7c9f-98ed-fc605980e052.jsonl")
+        assert extract_session_name_from_path(path) == "market-brief"
 
     def test_process_session_with_stats_keeps_count_before_transform(self):
         entry = LogEntry(
@@ -515,8 +519,8 @@ class TestToolUsageCounting:
     def test_process_logs_directory_with_tool_usage(self, tmp_path: Path):
         day_dir = tmp_path / "2026-01-21"
         day_dir.mkdir()
-        session_file_1 = day_dir / "arxiv-python-019be09e-1984-785b-9ef8-5eb623db4562.jsonl"
-        session_file_2 = day_dir / "arxiv-python-019be09e-1984-785b-9ef8-5eb623db4563.jsonl"
+        session_file_1 = day_dir / "arxiv-python-1769035200000000001.jsonl"
+        session_file_2 = day_dir / "arxiv-python-1769035200000000002.jsonl"
 
         tools_1 = [
             ToolDefinition(type="function", function={"name": "tool_a", "parameters": {}}),

@@ -214,10 +214,10 @@ class TestSessionResolution:
         assert len(log_files) == 1
         assert "session-" in log_files[0].name
 
-    def test_uuid_fallback(
+    def test_timestamp_fallback(
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
-        """UUID fallback when no session identifiers provided."""
+        """Timestamp fallback when no session identifiers provided."""
         response = client.post("/v1/chat/completions", json=minimal_payload)
         assert response.status_code == 200
 

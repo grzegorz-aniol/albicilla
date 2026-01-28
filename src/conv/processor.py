@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -13,8 +13,10 @@ from loguru import logger
 
 from .models import ConversationRecord, LogEntry, SessionToolUsageRow, ToolDefinition
 
-_UUID_SUFFIX = re.compile(
-    r"^(?P<prefix>.+)-(?P<uuid>[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$"
+_GENERATED_SESSION_UNIX_NS_SUFFIX = re.compile(r"^(?P<prefix>.+)-(?P<unix_ns>\d{19})$")
+_GENERATED_SESSION_UUID_SUFFIX = re.compile(
+    r"^(?P<prefix>.+)-(?P<uuid>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$",
+    flags=re.IGNORECASE,
 )
 
 
@@ -171,12 +173,16 @@ def count_tool_call_requests(messages: list[dict[str, Any]]) -> int:
 def extract_session_name_from_path(session_path: Path) -> str:
     """Extract a stable session name from a log filename.
 
-    For filenames like `arxiv-python-<uuid>.jsonl`, returns `arxiv-python`.
+    For generated filenames like `arxiv-python-<unix_ns>.jsonl` or
+    `market-brief-<uuid>.jsonl`, returns the scenario prefix.
     Otherwise returns the filename stem.
     """
     stem = session_path.stem
-    match = _UUID_SUFFIX.match(stem)
-    if match:
+    match = _GENERATED_SESSION_UNIX_NS_SUFFIX.match(stem)
+    if match is not None:
+        return match.group("prefix")
+    match = _GENERATED_SESSION_UUID_SUFFIX.match(stem)
+    if match is not None:
         return match.group("prefix")
     return stem
 
@@ -373,6 +379,10 @@ def process_logs_directory(
 def process_logs_directory_with_tool_usage(
     logs_dir: Path,
     json_tool_calls: bool = False,
+    integrity_callback: Callable[
+        [Path, str, ConversationRecord | None, ConversationRecord | None, bool], None
+    ]
+    | None = None,
 ) -> tuple[dict[date, list[ConversationRecord]], list[SessionToolUsageRow]]:
     """Process all sessions and also return a per-session tool usage report."""
     records_by_date: dict[date, list[ConversationRecord]] = {}
@@ -384,15 +394,26 @@ def process_logs_directory_with_tool_usage(
         logger.debug("Processing session file: {path}", path=session_path)
 
         entries = read_session_file(session_path)
+        scenario = extract_session_name_from_path(session_path)
         if not entries:
             logger.warning("Empty or invalid session file: {path}", path=session_path)
+            if integrity_callback is not None:
+                integrity_callback(session_path, scenario, None, None, json_tool_calls)
             continue
 
-        record, tool_call_count = process_session_with_stats(
-            entries, json_tool_calls=json_tool_calls
-        )
-        if record is None:
+        raw_record = process_session(entries, json_tool_calls=False)
+        if raw_record is None:
+            if integrity_callback is not None:
+                integrity_callback(session_path, scenario, None, None, json_tool_calls)
             continue
+
+        tool_call_count = count_tool_call_requests(raw_record.messages)
+        record = raw_record
+        if json_tool_calls:
+            record = ConversationRecord(messages=transform_messages(raw_record.messages), tools=raw_record.tools)
+
+        if integrity_callback is not None:
+            integrity_callback(session_path, scenario, raw_record, record, json_tool_calls)
 
         session_date = extract_date_from_path(session_path, logs_dir)
         if session_date is None:
@@ -400,7 +421,6 @@ def process_logs_directory_with_tool_usage(
 
         records_by_date.setdefault(session_date, []).append(record)
 
-        scenario = extract_session_name_from_path(session_path)
         key = (session_date, scenario)
         tool_calls_by_date_and_scenario[key] = tool_calls_by_date_and_scenario.get(key, 0) + tool_call_count
         session_count_by_date_and_scenario[key] = session_count_by_date_and_scenario.get(key, 0) + 1
