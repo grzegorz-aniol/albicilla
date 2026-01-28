@@ -483,6 +483,22 @@ class TestToolUsageCounting:
         path = Path("market-brief-019c0179-fae3-7c9f-98ed-fc605980e052.jsonl")
         assert extract_session_name_from_path(path) == "market-brief"
 
+    def test_extract_session_name_strips_numeric_prompt_suffix(self):
+        path = Path("google-maps-es-01.jsonl")
+        assert extract_session_name_from_path(path) == "google-maps-es"
+
+    def test_extract_session_name_does_not_strip_two_part_numeric_suffix(self):
+        path = Path("gpt-4.jsonl")
+        assert extract_session_name_from_path(path) == "gpt-4"
+
+    def test_extract_session_name_strips_prompt_suffix_after_uuid(self):
+        path = Path("google-maps-es-01-019c0179-fae3-7c9f-98ed-fc605980e052.jsonl")
+        assert extract_session_name_from_path(path) == "google-maps-es"
+
+    def test_extract_session_name_strips_prompt_suffix_after_timestamp(self):
+        path = Path("github-sk-05-1769035200000000001.jsonl")
+        assert extract_session_name_from_path(path) == "github-sk"
+
     def test_process_session_with_stats_keeps_count_before_transform(self):
         entry = LogEntry(
             timestamp=datetime.now(timezone.utc),
@@ -587,6 +603,44 @@ class TestToolUsageCounting:
         assert tool_usage[0].session_count == 2
         assert tool_usage[0].tool_call_count == 4
         assert tool_usage[0].tool_definition_count == 3
+
+    def test_process_logs_directory_groups_prompt_id_sessions(self, tmp_path: Path):
+        day_dir = tmp_path / "2026-01-21"
+        day_dir.mkdir(parents=True)
+
+        session_file_1 = day_dir / "google-maps-es-01.jsonl"
+        session_file_2 = day_dir / "google-maps-es-02.jsonl"
+
+        entry = LogEntry(
+            timestamp=datetime(2026, 1, 21, tzinfo=timezone.utc),
+            session_id="google-maps-es-01",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", content="Hello")],
+                tools=[
+                    {"type": "function", "function": {"name": "tool_a", "parameters": {}}},
+                ],
+            ),
+            response=ResponsePayload(
+                id="resp-1",
+                choices=[ResponseChoice(index=0, message=Message(role="assistant", content="Done"))],
+            ),
+        )
+
+        session_file_1.write_text(
+            json.dumps(entry.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        entry_2 = entry.model_copy(update={"session_id": "google-maps-es-02"})
+        session_file_2.write_text(
+            json.dumps(entry_2.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, tool_usage = process_logs_directory_with_tool_usage(tmp_path)
+        assert len(tool_usage) == 1
+        assert tool_usage[0].session == "google-maps-es"
+        assert tool_usage[0].session_count == 2
 
 
 class TestToolUsageReportWriter:
