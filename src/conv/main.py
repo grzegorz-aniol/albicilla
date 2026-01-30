@@ -10,6 +10,7 @@ import typer
 from loguru import logger
 
 from .models import ConversationRecord, SessionToolUsageRow
+from .anonymize import EmailAnonymizer
 from .integrity import (
     IntegrityFinding,
     analyze_export_record,
@@ -74,6 +75,11 @@ def process(
         "--verbose",
         "-v",
         help="Enable verbose logging",
+    ),
+    anonymize: bool = typer.Option(
+        True,
+        "--anonymize/--no-anonymize",
+        help="Anonymize emails in exported JSONL conversation records",
     ),
 ) -> None:
     """Process proxy logs and export session JSONL files."""
@@ -161,10 +167,10 @@ def process(
         all_records = [
             record for records in records_by_date.values() for record in records
         ]
-        write_records_to_file(all_records, output_path)
+        write_records_to_file(all_records, output_path, anonymize=anonymize)
         typer.echo(f"Wrote {total_records} records to {output_path}")
     else:
-        files_written = write_per_day(records_by_date, output_dir)
+        files_written = write_per_day(records_by_date, output_dir, anonymize=anonymize)
         typer.echo(
             f"Wrote {total_records} records across {files_written} files to {output_dir}"
         )
@@ -178,24 +184,34 @@ def process(
         typer.echo(f"Wrote integrity report to {integrity_report_path} ({findings_count} findings)")
 
 
-def write_records_to_file(records: list[ConversationRecord], output_path: Path) -> None:
+def write_records_to_file(
+    records: list[ConversationRecord],
+    output_path: Path,
+    *,
+    anonymize: bool,
+) -> None:
     """Write conversation records to a JSONL file."""
     with output_path.open("w", encoding="utf-8") as handle:
         for record in records:
-            line = json.dumps(record.model_dump(), ensure_ascii=False)
+            payload = record.model_dump()
+            if anonymize:
+                payload = EmailAnonymizer().scrub(payload)
+            line = json.dumps(payload, ensure_ascii=False)
             handle.write(line + "\n")
 
 
 def write_per_day(
     records_by_date: dict[date, list[ConversationRecord]],
     output_dir: Path,
+    *,
+    anonymize: bool,
 ) -> int:
     """Write one JSONL file per day. Returns number of files written."""
     files_written = 0
 
     for day, records in sorted(records_by_date.items()):
         output_path = output_dir / f"{day.isoformat()}.jsonl"
-        write_records_to_file(records, output_path)
+        write_records_to_file(records, output_path, anonymize=anonymize)
         logger.info(
             "Wrote {count} records to {path}",
             count=len(records),

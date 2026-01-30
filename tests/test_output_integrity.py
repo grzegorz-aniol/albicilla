@@ -10,6 +10,8 @@ from collections.abc import Iterator
 import pytest
 from jsonschema import Draft202012Validator
 
+from conv.anonymize import EMAIL_REGEX, DEFAULT_EMAIL_LOCAL_PART_LENGTH, is_anonymized_email
+
 OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
 
@@ -103,6 +105,28 @@ def _assert_tools_used(payload: dict, path: Path, line_number: int) -> None:
             stacklevel=2,
         )
 
+def _iter_email_matches(value: object) -> Iterator[str]:
+    match value:
+        case str():
+            for match_obj in EMAIL_REGEX.finditer(value):
+                yield match_obj.group(0)
+        case list():
+            for item in value:
+                yield from _iter_email_matches(item)
+        case dict():
+            for item in value.values():
+                yield from _iter_email_matches(item)
+        case _:
+            return
+
+
+def _assert_emails_anonymized(payload: dict, path: Path, line_number: int) -> None:
+    for email in _iter_email_matches(payload):
+        assert is_anonymized_email(
+            email,
+            local_part_length=DEFAULT_EMAIL_LOCAL_PART_LENGTH,
+        ), f"Email not anonymized in {path.name}:{line_number}: {email}"
+
 
 @pytest.fixture(scope="session")
 def tool_schema_validator(tool_definitions_schema: dict[str, object]) -> Draft202012Validator:
@@ -123,6 +147,7 @@ def test_output_jsonl_records(
         has_payload = True
         _assert_messages(payload)
         _assert_tools_used(payload, jsonl_path, line_number)
+        _assert_emails_anonymized(payload, jsonl_path, line_number)
 
         tools = payload.get("tools") or []
         assert isinstance(tools, list) or tools is None, "tools must be a list"
