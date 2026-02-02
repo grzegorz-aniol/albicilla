@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -17,11 +19,20 @@ from .integrity import (
     analyze_tool_result_heuristics,
 )
 from .processor import process_logs_directory_with_tool_usage
+from .tool_usage import ToolUsageGroupBy, aggregate_tool_usage
 
 DEFAULT_LOGS_DIR = Path.cwd() / "proxy_logs"
 DEFAULT_OUTPUT_DIR = Path.cwd() / "output"
 DEFAULT_TOOL_REPORT_NAME = "tool-usage.csv"
 DEFAULT_INTEGRITY_REPORT_NAME = "integrity-report.txt"
+
+_FILENAME_SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+class OutputGroupBy(str, Enum):
+    date = "date"
+    scenario = "scenario"
+
 
 app = typer.Typer(
     help="Process proxy logs and export conversations as JSONL.",
@@ -49,6 +60,11 @@ def process(
         "-s",
         help="Merge all sessions into one output file",
     ),
+    group_by: OutputGroupBy = typer.Option(
+        OutputGroupBy.date,
+        "--group-by",
+        help="How to group output files when not using --single-file",
+    ),
     json_tool_calls: bool = typer.Option(
         False,
         "--json-tool-calls/--no-json-tool-calls",
@@ -63,7 +79,7 @@ def process(
     tool_report_path: Path | None = typer.Option(
         None,
         "--tool-report-path",
-        help="Path for the tool usage report (defaults to output/tool-usage.jsonl)",
+        help="Path for the tool usage report (defaults to output/tool-usage.csv)",
     ),
     integrity_analysis: bool = typer.Option(
         True,
@@ -96,6 +112,9 @@ def process(
         raise typer.BadParameter(
             f"Logs directory '{logs_dir}' does not exist or is not a directory."
         )
+
+    if single_file and group_by is OutputGroupBy.scenario:
+        raise typer.BadParameter("--single-file cannot be combined with --group-by scenario.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,7 +165,7 @@ def process(
         )
 
     try:
-        records_by_date, tool_usage = process_logs_directory_with_tool_usage(
+        records_by_date, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(
             logs_dir,
             json_tool_calls=json_tool_calls,
             integrity_callback=_integrity_callback if integrity_analysis else None,
@@ -170,14 +189,23 @@ def process(
         write_records_to_file(all_records, output_path, anonymize=anonymize)
         typer.echo(f"Wrote {total_records} records to {output_path}")
     else:
-        files_written = write_per_day(records_by_date, output_dir, anonymize=anonymize)
+        if group_by is OutputGroupBy.scenario:
+            files_written = write_per_scenario(records_by_scenario, output_dir, anonymize=anonymize)
+        else:
+            files_written = write_per_day(records_by_date, output_dir, anonymize=anonymize)
         typer.echo(
             f"Wrote {total_records} records across {files_written} files to {output_dir}"
         )
 
     if tool_report:
         report_path = tool_report_path or (output_dir / DEFAULT_TOOL_REPORT_NAME)
-        write_tool_usage_report(tool_usage, report_path)
+        if single_file:
+            tool_usage_rows = aggregate_tool_usage(tool_usage_samples, group_by=ToolUsageGroupBy.none)
+        elif group_by is OutputGroupBy.scenario:
+            tool_usage_rows = aggregate_tool_usage(tool_usage_samples, group_by=ToolUsageGroupBy.scenario)
+        else:
+            tool_usage_rows = aggregate_tool_usage(tool_usage_samples, group_by=ToolUsageGroupBy.date)
+        write_tool_usage_report(tool_usage_rows, report_path)
         typer.echo(f"Wrote tool usage report to {report_path}")
 
     if integrity_analysis:
@@ -222,16 +250,40 @@ def write_per_day(
     return files_written
 
 
+def write_per_scenario(
+    records_by_scenario: dict[str, list[ConversationRecord]],
+    output_dir: Path,
+    *,
+    anonymize: bool,
+) -> int:
+    """Write one JSONL file per scenario. Returns number of files written."""
+    files_written = 0
+
+    for scenario, records in sorted(records_by_scenario.items()):
+        filename = _sanitize_filename_component(scenario) or "scenario"
+        output_path = output_dir / f"{filename}.jsonl"
+        write_records_to_file(records, output_path, anonymize=anonymize)
+        logger.info(
+            "Wrote {count} records to {path}",
+            count=len(records),
+            path=output_path,
+        )
+        files_written += 1
+
+    return files_written
+
+
 def write_tool_usage_report(tool_usage: list[SessionToolUsageRow], output_path: Path) -> None:
     """Write a per-session tool usage report as CSV (comma-separated)."""
     with output_path.open("w", encoding="utf-8") as handle:
         handle.write(
             "date,scenario,session_count,tool_call_count,tool_definition_count,client_turns,assistant_turns,assistant_turns_with_tools\n"
         )
-        for row in sorted(tool_usage, key=lambda item: (item.date, item.session)):
+        for row in sorted(tool_usage, key=lambda item: (item.date or date.min, item.session)):
+            date_value = row.date.isoformat() if row.date is not None else ""
             scenario = _csv_escape(row.session)
             handle.write(
-                f"{row.date.isoformat()},{scenario},{row.session_count},{row.tool_call_count},"
+                f"{date_value},{scenario},{row.session_count},{row.tool_call_count},"
                 f"{row.tool_definition_count},{row.client_turns},{row.assistant_turns},{row.assistant_turns_with_tools}\n"
             )
 
@@ -242,6 +294,11 @@ def _csv_escape(value: str) -> str:
         escaped = value.replace('"', '""')
         return f'"{escaped}"'
     return value
+
+
+def _sanitize_filename_component(value: str) -> str:
+    cleaned = _FILENAME_SAFE_CHARS.sub("_", value).strip("._- ")
+    return cleaned[:120]
 
 
 def main() -> None:

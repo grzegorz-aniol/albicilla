@@ -20,6 +20,7 @@ from conv.processor import (
     serialize_tool_result,
     transform_messages,
 )
+from conv.tool_usage import ToolUsageGroupBy, aggregate_tool_usage
 
 TIP_SPLIT_PROMPT = (
     "Ile wyniesie indywidualna kwota napiwku dla każdej osoby w naszej grupie "
@@ -596,11 +597,15 @@ class TestToolUsageCounting:
             encoding="utf-8",
         )
 
-        records_by_date, tool_usage = process_logs_directory_with_tool_usage(tmp_path)
+        records_by_date, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(tmp_path)
         assert len(records_by_date) == 1
+        assert len(records_by_scenario) == 1
+        assert "arxiv-python" in records_by_scenario
+        tool_usage = aggregate_tool_usage(tool_usage_samples, group_by=ToolUsageGroupBy.date)
         assert len(tool_usage) == 1
+        assert tool_usage[0].date is not None
         assert tool_usage[0].date.isoformat() == "2026-01-21"
-        assert tool_usage[0].session == "arxiv-python"
+        assert tool_usage[0].session == ""
         assert tool_usage[0].session_count == 2
         assert tool_usage[0].tool_call_count == 4
         assert tool_usage[0].tool_definition_count == 3
@@ -641,10 +646,60 @@ class TestToolUsageCounting:
             encoding="utf-8",
         )
 
-        _, tool_usage = process_logs_directory_with_tool_usage(tmp_path)
+        _, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(tmp_path)
+        assert len(records_by_scenario) == 1
+        tool_usage = aggregate_tool_usage(tool_usage_samples, group_by=ToolUsageGroupBy.scenario)
         assert len(tool_usage) == 1
+        assert tool_usage[0].date is None
         assert tool_usage[0].session == "google-maps-es"
         assert tool_usage[0].session_count == 2
+
+    def test_write_per_scenario_merges_across_dates(self, tmp_path: Path):
+        from conv.main import write_per_scenario
+
+        day_one = tmp_path / "2026-01-21"
+        day_two = tmp_path / "2026-01-22"
+        day_one.mkdir(parents=True)
+        day_two.mkdir(parents=True)
+
+        session_one = day_one / "market-brief-1769035200000000001.jsonl"
+        session_two = day_two / "market-brief-1769035200000000002.jsonl"
+
+        entry = LogEntry(
+            timestamp=datetime(2026, 1, 21, 12, 0, tzinfo=timezone.utc),
+            session_id="session-1",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", content="Hi")],
+            ),
+            response=ResponsePayload(
+                id="resp-1",
+                choices=[ResponseChoice(index=0, message=Message(role="assistant", content="Done"))],
+            ),
+        )
+
+        session_one.write_text(
+            json.dumps(entry.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        session_two.write_text(
+            json.dumps(entry.model_copy(update={"session_id": "session-2"}).model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, records_by_scenario, _ = process_logs_directory_with_tool_usage(tmp_path)
+        assert set(records_by_scenario) == {"market-brief"}
+        assert len(records_by_scenario["market-brief"]) == 2
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(parents=True)
+
+        files_written = write_per_scenario(records_by_scenario, output_dir, anonymize=False)
+        assert files_written == 1
+
+        output_path = output_dir / "market-brief.jsonl"
+        content = output_path.read_text(encoding="utf-8").splitlines()
+        assert len(content) == 2
 
 
 class TestToolUsageReportWriter:

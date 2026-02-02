@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Iterator
 from datetime import date
 from pathlib import Path
@@ -11,14 +10,8 @@ from typing import Any
 
 from loguru import logger
 
-from .models import ConversationRecord, LogEntry, SessionToolUsageRow, ToolDefinition
-
-_GENERATED_SESSION_UNIX_NS_SUFFIX = re.compile(r"^(?P<prefix>.+)-(?P<unix_ns>\d{19})$")
-_GENERATED_SESSION_UUID_SUFFIX = re.compile(
-    r"^(?P<prefix>.+)-(?P<uuid>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$",
-    flags=re.IGNORECASE,
-)
-
+from .models import ConversationRecord, LogEntry, SessionToolUsageSample, ToolDefinition
+from .scenario import extract_session_name_from_path
 
 def read_session_file(path: Path) -> list[LogEntry]:
     """Parse a JSONL session file and return list of log entries."""
@@ -241,66 +234,6 @@ def count_turn_groups(messages: list[dict[str, Any]]) -> tuple[int, int, int]:
     return client_turns, assistant_turns, assistant_tool_turns
 
 
-def extract_session_name_from_path(session_path: Path) -> str:
-    """Extract a stable session name from a log filename.
-
-    For generated filenames like `arxiv-python-<unix_ns>.jsonl` or
-    `market-brief-<uuid>.jsonl`, returns the scenario prefix.
-    Also strips short, numeric prompt/task IDs such as `google-maps-es-01.jsonl`,
-    returning the stable session prefix (`google-maps-es`) for grouping.
-    Otherwise returns the filename stem.
-    """
-    stem = session_path.stem
-    return _normalize_session_stem_for_grouping(stem)
-
-
-def _normalize_session_stem_for_grouping(stem: str) -> str:
-    """Normalize a session filename stem to a stable scenario/session name.
-
-    This function is intentionally conservative: it removes only well-known
-    generated suffixes (UUID, 19-digit unix-ns) and short numeric suffixes when
-    they look like an appended prompt/task ID.
-    """
-    normalized = stem
-    # Allow multiple suffixes (e.g. "<scenario>-01-<uuid>" or "<scenario>-01-<unix_ns>").
-    for _ in range(3):
-        updated = _strip_generated_session_suffix(normalized)
-        updated = _strip_numeric_prompt_suffix(updated)
-        if updated == normalized:
-            break
-        normalized = updated
-    return normalized
-
-
-def _strip_generated_session_suffix(stem: str) -> str:
-    match = _GENERATED_SESSION_UNIX_NS_SUFFIX.match(stem)
-    if match is not None:
-        return match.group("prefix")
-    match = _GENERATED_SESSION_UUID_SUFFIX.match(stem)
-    if match is not None:
-        return match.group("prefix")
-    return stem
-
-
-def _strip_numeric_prompt_suffix(stem: str) -> str:
-    parts = stem.split("-")
-    if len(parts) < 3:
-        return stem
-
-    last = parts[-1]
-    prev = parts[-2]
-
-    # Treat a short numeric trailing segment as a prompt/task ID when the
-    # preceding segment isn't also numeric (avoids stripping YYYY-MM-DD-like
-    # suffixes).
-    if last.isdigit() and 1 <= len(last) <= 6 and not prev.isdigit():
-        prefix = "-".join(parts[:-1])
-        return prefix or stem
-    return stem
-
-
-
-
 def _transform_assistant_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
     """Transform assistant message with tool_calls to inline format."""
     content_parts: list[str] = []
@@ -495,15 +428,11 @@ def process_logs_directory_with_tool_usage(
         [Path, str, ConversationRecord | None, ConversationRecord | None, bool], None
     ]
     | None = None,
-) -> tuple[dict[date, list[ConversationRecord]], list[SessionToolUsageRow]]:
-    """Process all sessions and also return a per-session tool usage report."""
+) -> tuple[dict[date, list[ConversationRecord]], dict[str, list[ConversationRecord]], list[SessionToolUsageSample]]:
+    """Process all sessions and return per-session tool usage samples."""
     records_by_date: dict[date, list[ConversationRecord]] = {}
-    tool_calls_by_date_and_scenario: dict[tuple[date, str], int] = {}
-    tool_names_by_date_and_scenario: dict[tuple[date, str], set[str]] = {}
-    session_count_by_date_and_scenario: dict[tuple[date, str], int] = {}
-    client_turns_by_date_and_scenario: dict[tuple[date, str], int] = {}
-    assistant_turns_by_date_and_scenario: dict[tuple[date, str], int] = {}
-    assistant_turns_with_tools_by_date_and_scenario: dict[tuple[date, str], int] = {}
+    records_by_scenario: dict[str, list[ConversationRecord]] = {}
+    samples: list[SessionToolUsageSample] = []
 
     for session_path in iter_session_files(logs_dir):
         logger.debug("Processing session file: {path}", path=session_path)
@@ -536,41 +465,21 @@ def process_logs_directory_with_tool_usage(
             session_date = entries[0].timestamp.date()
 
         records_by_date.setdefault(session_date, []).append(record)
+        records_by_scenario.setdefault(scenario, []).append(record)
 
-        key = (session_date, scenario)
-        tool_calls_by_date_and_scenario[key] = tool_calls_by_date_and_scenario.get(key, 0) + tool_call_count
-        session_count_by_date_and_scenario[key] = session_count_by_date_and_scenario.get(key, 0) + 1
-        client_turns_by_date_and_scenario[key] = client_turns_by_date_and_scenario.get(key, 0) + client_turns
-        assistant_turns_by_date_and_scenario[key] = (
-            assistant_turns_by_date_and_scenario.get(key, 0) + assistant_turns
+        samples.append(
+            SessionToolUsageSample(
+                date=session_date,
+                session=scenario,
+                tool_call_count=tool_call_count,
+                tool_definition_names=extract_tool_names(record.tools),
+                client_turns=client_turns,
+                assistant_turns=assistant_turns,
+                assistant_turns_with_tools=assistant_tool_turns,
+            )
         )
-        assistant_turns_with_tools_by_date_and_scenario[key] = (
-            assistant_turns_with_tools_by_date_and_scenario.get(key, 0) + assistant_tool_turns
-        )
-        if key not in tool_names_by_date_and_scenario:
-            tool_names_by_date_and_scenario[key] = set()
-        tool_names_by_date_and_scenario[key].update(extract_tool_names(record.tools))
 
-    keys = set(session_count_by_date_and_scenario)
-    report_rows = [
-        SessionToolUsageRow(
-            date=day,
-            session=scenario,
-            session_count=session_count_by_date_and_scenario.get((day, scenario), 0),
-            tool_call_count=tool_calls_by_date_and_scenario.get((day, scenario), 0),
-            tool_definition_count=len(
-                tool_names_by_date_and_scenario.get((day, scenario), set())
-            ),
-            client_turns=client_turns_by_date_and_scenario.get((day, scenario), 0),
-            assistant_turns=assistant_turns_by_date_and_scenario.get((day, scenario), 0),
-            assistant_turns_with_tools=assistant_turns_with_tools_by_date_and_scenario.get(
-                (day, scenario), 0
-            ),
-        )
-        for (day, scenario) in sorted(keys)
-    ]
-
-    return records_by_date, report_rows
+    return records_by_date, records_by_scenario, samples
 
 
 def extract_tool_names(tools: list[dict[str, Any]]) -> set[str]:

@@ -94,11 +94,23 @@ class ConversationRecord(BaseModel):
 class SessionToolUsageRow(BaseModel):
     """Tool usage report row for a single processed session."""
 
-    date: date
+    date: date | None
     session: str
     session_count: int
     tool_call_count: int
     tool_definition_count: int
+    client_turns: int
+    assistant_turns: int
+    assistant_turns_with_tools: int
+
+
+class SessionToolUsageSample(BaseModel):
+    """Tool usage statistics for a single session file (pre-aggregation)."""
+
+    date: date
+    session: str
+    tool_call_count: int
+    tool_definition_names: set[str]
     client_turns: int
     assistant_turns: int
     assistant_turns_with_tools: int
