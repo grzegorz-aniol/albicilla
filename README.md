@@ -158,6 +158,9 @@ By default the converter also writes a per-day tool usage report (aggregated per
 - `session_count` (number of session files aggregated for that scenario on that day)
 - `tool_call_count` (assistant-side tool call requests only, summed across all sessions of that scenario on that day)
 - `tool_definition_count` (unique tool definition names available across all sessions of that scenario on that day)
+- `client_turns` (count of consecutive message groups where role is `system`/`user`, summed across all sessions of that scenario on that day; tool result messages are ignored for grouping)
+- `assistant_turns` (count of consecutive message groups where role is `assistant`, summed across all sessions of that scenario on that day; tool result messages are ignored for grouping)
+- `assistant_turns_with_tools` (count of consecutive `assistant` message groups that contain at least one tool request, summed across all sessions of that scenario on that day; tool results are ignored)
 
 ### Enable tool structured output (JSON tool calls)
 

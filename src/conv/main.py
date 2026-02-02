@@ -225,11 +225,14 @@ def write_per_day(
 def write_tool_usage_report(tool_usage: list[SessionToolUsageRow], output_path: Path) -> None:
     """Write a per-session tool usage report as CSV (comma-separated)."""
     with output_path.open("w", encoding="utf-8") as handle:
-        handle.write("date,scenario,session_count,tool_call_count,tool_definition_count\n")
+        handle.write(
+            "date,scenario,session_count,tool_call_count,tool_definition_count,client_turns,assistant_turns,assistant_turns_with_tools\n"
+        )
         for row in sorted(tool_usage, key=lambda item: (item.date, item.session)):
             scenario = _csv_escape(row.session)
             handle.write(
-                f"{row.date.isoformat()},{scenario},{row.session_count},{row.tool_call_count},{row.tool_definition_count}\n"
+                f"{row.date.isoformat()},{scenario},{row.session_count},{row.tool_call_count},"
+                f"{row.tool_definition_count},{row.client_turns},{row.assistant_turns},{row.assistant_turns_with_tools}\n"
             )
 
 

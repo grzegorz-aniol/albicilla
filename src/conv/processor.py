@@ -170,6 +170,77 @@ def count_tool_call_requests(messages: list[dict[str, Any]]) -> int:
     return count
 
 
+def _assistant_message_has_tool_request(message: dict[str, Any]) -> bool:
+    if message.get("role") != "assistant":
+        return False
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and len(tool_calls) > 0:
+        return True
+
+    function_call = message.get("function_call")
+    if isinstance(function_call, dict):
+        return True
+
+    content = message.get("content")
+    if isinstance(content, str) and "<tool_call>" in content:
+        return True
+
+    return False
+
+
+def count_turn_groups(messages: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Count consecutive role-group "turns" in a session.
+
+    A client turn is a consecutive group of messages where role is either
+    "system" or "user", uninterrupted by any other role.
+
+    An assistant turn is a consecutive group of messages where role is
+    "assistant", uninterrupted by any other role.
+
+    Tool result messages (role "tool") are ignored for the purpose of grouping.
+    """
+    client_turns = 0
+    assistant_turns = 0
+    assistant_tool_turns = 0
+    previous_group: str | None = None
+    pending_assistant_tool_turn = False
+
+    for message in messages:
+        role = message.get("role")
+        if role == "tool":
+            continue
+
+        if role == "assistant":
+            group = "assistant"
+        elif role in {"system", "user"}:
+            group = "client"
+        else:
+            if pending_assistant_tool_turn:
+                assistant_tool_turns += 1
+                pending_assistant_tool_turn = False
+            previous_group = None
+            continue
+
+        if group != previous_group:
+            if previous_group == "assistant" and pending_assistant_tool_turn:
+                assistant_tool_turns += 1
+                pending_assistant_tool_turn = False
+            if group == "assistant":
+                assistant_turns += 1
+            else:
+                client_turns += 1
+            previous_group = group
+
+        if group == "assistant" and _assistant_message_has_tool_request(message):
+            pending_assistant_tool_turn = True
+
+    if pending_assistant_tool_turn:
+        assistant_tool_turns += 1
+
+    return client_turns, assistant_turns, assistant_tool_turns
+
+
 def extract_session_name_from_path(session_path: Path) -> str:
     """Extract a stable session name from a log filename.
 
@@ -430,6 +501,9 @@ def process_logs_directory_with_tool_usage(
     tool_calls_by_date_and_scenario: dict[tuple[date, str], int] = {}
     tool_names_by_date_and_scenario: dict[tuple[date, str], set[str]] = {}
     session_count_by_date_and_scenario: dict[tuple[date, str], int] = {}
+    client_turns_by_date_and_scenario: dict[tuple[date, str], int] = {}
+    assistant_turns_by_date_and_scenario: dict[tuple[date, str], int] = {}
+    assistant_turns_with_tools_by_date_and_scenario: dict[tuple[date, str], int] = {}
 
     for session_path in iter_session_files(logs_dir):
         logger.debug("Processing session file: {path}", path=session_path)
@@ -449,6 +523,7 @@ def process_logs_directory_with_tool_usage(
             continue
 
         tool_call_count = count_tool_call_requests(raw_record.messages)
+        client_turns, assistant_turns, assistant_tool_turns = count_turn_groups(raw_record.messages)
         record = raw_record
         if json_tool_calls:
             record = ConversationRecord(messages=transform_messages(raw_record.messages), tools=raw_record.tools)
@@ -465,11 +540,18 @@ def process_logs_directory_with_tool_usage(
         key = (session_date, scenario)
         tool_calls_by_date_and_scenario[key] = tool_calls_by_date_and_scenario.get(key, 0) + tool_call_count
         session_count_by_date_and_scenario[key] = session_count_by_date_and_scenario.get(key, 0) + 1
+        client_turns_by_date_and_scenario[key] = client_turns_by_date_and_scenario.get(key, 0) + client_turns
+        assistant_turns_by_date_and_scenario[key] = (
+            assistant_turns_by_date_and_scenario.get(key, 0) + assistant_turns
+        )
+        assistant_turns_with_tools_by_date_and_scenario[key] = (
+            assistant_turns_with_tools_by_date_and_scenario.get(key, 0) + assistant_tool_turns
+        )
         if key not in tool_names_by_date_and_scenario:
             tool_names_by_date_and_scenario[key] = set()
         tool_names_by_date_and_scenario[key].update(extract_tool_names(record.tools))
 
-    keys = set(tool_calls_by_date_and_scenario) | set(tool_names_by_date_and_scenario)
+    keys = set(session_count_by_date_and_scenario)
     report_rows = [
         SessionToolUsageRow(
             date=day,
@@ -478,6 +560,11 @@ def process_logs_directory_with_tool_usage(
             tool_call_count=tool_calls_by_date_and_scenario.get((day, scenario), 0),
             tool_definition_count=len(
                 tool_names_by_date_and_scenario.get((day, scenario), set())
+            ),
+            client_turns=client_turns_by_date_and_scenario.get((day, scenario), 0),
+            assistant_turns=assistant_turns_by_date_and_scenario.get((day, scenario), 0),
+            assistant_turns_with_tools=assistant_turns_with_tools_by_date_and_scenario.get(
+                (day, scenario), 0
             ),
         )
         for (day, scenario) in sorted(keys)

@@ -99,3 +99,6 @@ class SessionToolUsageRow(BaseModel):
     session_count: int
     tool_call_count: int
     tool_definition_count: int
+    client_turns: int
+    assistant_turns: int
+    assistant_turns_with_tools: int

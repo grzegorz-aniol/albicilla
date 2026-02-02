@@ -9,6 +9,7 @@ import pytest
 from conv.models import ConversationRecord, LogEntry, Message, RequestPayload, ResponseChoice, ResponsePayload, ToolDefinition
 from conv.processor import (
     count_tool_call_requests,
+    count_turn_groups,
     coerce_arguments,
     extract_session_name_from_path,
     extract_tool_schemas,
@@ -603,6 +604,9 @@ class TestToolUsageCounting:
         assert tool_usage[0].session_count == 2
         assert tool_usage[0].tool_call_count == 4
         assert tool_usage[0].tool_definition_count == 3
+        assert tool_usage[0].client_turns == 2
+        assert tool_usage[0].assistant_turns == 2
+        assert tool_usage[0].assistant_turns_with_tools == 2
 
     def test_process_logs_directory_groups_prompt_id_sessions(self, tmp_path: Path):
         day_dir = tmp_path / "2026-01-21"
@@ -657,6 +661,9 @@ class TestToolUsageReportWriter:
                     session_count=5,
                     tool_call_count=3,
                     tool_definition_count=2,
+                    client_turns=7,
+                    assistant_turns=6,
+                    assistant_turns_with_tools=3,
                 ),
                 SessionToolUsageRow(
                     date=datetime(2026, 1, 22, tzinfo=timezone.utc).date(),
@@ -664,12 +671,51 @@ class TestToolUsageReportWriter:
                     session_count=1,
                     tool_call_count=0,
                     tool_definition_count=0,
+                    client_turns=1,
+                    assistant_turns=1,
+                    assistant_turns_with_tools=0,
                 ),
             ],
             output_path,
         )
 
         content = output_path.read_text(encoding="utf-8").splitlines()
-        assert content[0] == "date,scenario,session_count,tool_call_count,tool_definition_count"
-        assert "2026-01-21,arxiv,5,3,2" in content
-        assert "2026-01-22,yt,1,0,0" in content
+        assert (
+            content[0]
+            == "date,scenario,session_count,tool_call_count,tool_definition_count,client_turns,assistant_turns,assistant_turns_with_tools"
+        )
+        assert "2026-01-21,arxiv,5,3,2,7,6,3" in content
+        assert "2026-01-22,yt,1,0,0,1,1,0" in content
+
+
+class TestTurnCounting:
+    def test_counts_turn_groups(self):
+        messages = [
+            {"role": "system", "content": "A"},
+            {"role": "user", "content": "B"},
+            {"role": "assistant", "content": "C"},
+            {"role": "assistant", "content": "D"},
+            {"role": "tool", "content": "E"},
+            {"role": "user", "content": "F"},
+            {"role": "assistant", "content": "G"},
+        ]
+
+        client_turns, assistant_turns, assistant_tool_turns = count_turn_groups(messages)
+        assert client_turns == 2
+        assert assistant_turns == 2
+        assert assistant_tool_turns == 0
+
+    def test_counts_assistant_turn_groups_with_tool_requests(self):
+        messages = [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
+            {"role": "assistant", "content": "still assistant"},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "no tools"},
+            {"role": "user", "content": "B"},
+            {"role": "assistant", "content": "<tool_call>{}</tool_call>"},
+        ]
+
+        _, assistant_turns, assistant_tool_turns = count_turn_groups(messages)
+        assert assistant_turns == 2
+        assert assistant_tool_turns == 2
