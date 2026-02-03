@@ -13,6 +13,7 @@ from loguru import logger
 from .models import ConversationRecord, LogEntry, SessionToolUsageSample, ToolDefinition
 from .scenario import extract_session_name_from_path
 
+
 def read_session_file(path: Path) -> list[LogEntry]:
     """Parse a JSONL session file and return list of log entries."""
     entries: list[LogEntry] = []
@@ -404,7 +405,10 @@ def process_logs_directory(
             logger.warning("Empty or invalid session file: {path}", path=session_path)
             continue
 
-        record = process_session(entries, json_tool_calls=json_tool_calls)
+        record = process_session(
+            entries,
+            json_tool_calls=json_tool_calls,
+        )
         if record is None:
             continue
 

@@ -4,21 +4,15 @@ from __future__ import annotations
 
 import json
 import warnings
-from pathlib import Path
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
 
 from conv.anonymize import EMAIL_REGEX, DEFAULT_EMAIL_LOCAL_PART_LENGTH, is_anonymized_email
 
-OUTPUT_DIR = Path(__file__).parent.parent / "output"
-
-
-def _iter_jsonl_files(directory: Path) -> Iterator[Path]:
-    for jsonl_path in sorted(p for p in directory.glob("*.jsonl") if p.is_file()):
-        yield jsonl_path
-
+CONTEXT_LIMIT_PHRASE = "context limit was reached"
 
 def _iter_jsonl(path: Path) -> Iterator[tuple[int, dict]]:
     with path.open(encoding="utf-8") as handle:
@@ -128,18 +122,33 @@ def _assert_emails_anonymized(payload: dict, path: Path, line_number: int) -> No
         ), f"Email not anonymized in {path.name}:{line_number}: {email}"
 
 
+def _contains_context_limit(value: object) -> bool:
+    match value:
+        case str():
+            return CONTEXT_LIMIT_PHRASE in value.lower()
+        case list():
+            return any(_contains_context_limit(item) for item in value)
+        case dict():
+            return any(_contains_context_limit(item) for item in value.values())
+        case _:
+            return False
+
+
 @pytest.fixture(scope="session")
 def tool_schema_validator(tool_definitions_schema: dict[str, object]) -> Draft202012Validator:
     """Compile reusable validator for tool schemas."""
     return Draft202012Validator(tool_definitions_schema)
 
 
-@pytest.mark.parametrize("jsonl_path", _iter_jsonl_files(OUTPUT_DIR))
 def test_output_jsonl_records(
     jsonl_path: Path,
+    logs_dir: Path,
     tool_schema_validator: Draft202012Validator,
 ) -> None:
     """Ensure each JSONL payload matches expectations."""
+    assert (
+        jsonl_path.resolve().parent == logs_dir.resolve()
+    ), f"Unexpected jsonl_path outside logs_dir: {jsonl_path}"
     print(f"Processing output file: {jsonl_path}")
     has_payload = False
 
@@ -148,6 +157,11 @@ def test_output_jsonl_records(
         _assert_messages(payload)
         _assert_tools_used(payload, jsonl_path, line_number)
         _assert_emails_anonymized(payload, jsonl_path, line_number)
+
+        if _contains_context_limit(payload):
+            raise AssertionError(
+                f"Context limit reached in {jsonl_path.name}:{line_number}"
+            )
 
         tools = payload.get("tools") or []
         assert isinstance(tools, list) or tools is None, "tools must be a list"
