@@ -13,6 +13,7 @@ from loguru import logger
 
 from .models import ConversationRecord, SessionToolUsageRow
 from .anonymize import EmailAnonymizer
+from .cleanup import CleanupConfig
 from .integrity import (
     IntegrityFinding,
     analyze_export_record,
@@ -97,6 +98,11 @@ def process(
         "--anonymize/--no-anonymize",
         help="Anonymize emails in exported JSONL conversation records",
     ),
+    cleanup_goose_info: bool = typer.Option(
+        True,
+        "--cleanup-goose-info/--no-cleanup-goose-info",
+        help="Drop Goose-injected `role=user` messages fully wrapped in `<info-msg>...</info-msg>`",
+    ),
 ) -> None:
     """Process proxy logs and export session JSONL files."""
     # Configure logging
@@ -165,9 +171,11 @@ def process(
         )
 
     try:
+        cleanup_config = CleanupConfig(drop_goose_info_user_messages=cleanup_goose_info)
         records_by_date, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(
             logs_dir,
             json_tool_calls=json_tool_calls,
+            cleanup=cleanup_config,
             integrity_callback=_integrity_callback if integrity_analysis else None,
         )
     finally:

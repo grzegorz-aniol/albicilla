@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from .cleanup import CleanupConfig, apply_cleanups
 from .models import ConversationRecord, LogEntry, SessionToolUsageSample, ToolDefinition
 from .scenario import extract_session_name_from_path
 
@@ -158,6 +159,8 @@ def count_tool_call_requests(messages: list[dict[str, Any]]) -> int:
             continue
 
         content = message.get("content")
+        if isinstance(content, list):
+            content = _normalize_content_list(content)
         if isinstance(content, str):
             count += content.count("<tool_call>")
 
@@ -177,6 +180,8 @@ def _assistant_message_has_tool_request(message: dict[str, Any]) -> bool:
         return True
 
     content = message.get("content")
+    if isinstance(content, list):
+        content = _normalize_content_list(content)
     if isinstance(content, str) and "<tool_call>" in content:
         return True
 
@@ -192,7 +197,8 @@ def count_turn_groups(messages: list[dict[str, Any]]) -> tuple[int, int, int]:
     An assistant turn is a consecutive group of messages where role is
     "assistant", uninterrupted by any other role.
 
-    Tool result messages (role "tool") are ignored for the purpose of grouping.
+    Tool result messages (role "tool" or legacy "function") are ignored for the
+    purpose of grouping.
     """
     client_turns = 0
     assistant_turns = 0
@@ -202,7 +208,7 @@ def count_turn_groups(messages: list[dict[str, Any]]) -> tuple[int, int, int]:
 
     for message in messages:
         role = message.get("role")
-        if role == "tool":
+        if role in {"tool", "function"}:
             continue
 
         if role == "assistant":
@@ -428,6 +434,8 @@ def process_logs_directory(
 def process_logs_directory_with_tool_usage(
     logs_dir: Path,
     json_tool_calls: bool = False,
+    *,
+    cleanup: CleanupConfig | None = None,
     integrity_callback: Callable[
         [Path, str, ConversationRecord | None, ConversationRecord | None, bool], None
     ]
@@ -454,6 +462,9 @@ def process_logs_directory_with_tool_usage(
             if integrity_callback is not None:
                 integrity_callback(session_path, scenario, None, None, json_tool_calls)
             continue
+
+        if cleanup is not None:
+            raw_record = raw_record.model_copy(update={"messages": apply_cleanups(raw_record.messages, cleanup)})
 
         tool_call_count = count_tool_call_requests(raw_record.messages)
         client_turns, assistant_turns, assistant_tool_turns = count_turn_groups(raw_record.messages)

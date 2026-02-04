@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from conv.models import ConversationRecord, LogEntry, Message, RequestPayload, ResponseChoice, ResponsePayload, ToolDefinition
+from conv.cleanup import CleanupConfig, apply_cleanups
 from conv.processor import (
     count_tool_call_requests,
     count_turn_groups,
@@ -477,6 +478,12 @@ class TestToolUsageCounting:
         ]
         assert count_tool_call_requests(messages) == 2
 
+    def test_counts_tool_calls_from_inline_tool_call_tags_in_content_list(self):
+        messages = [
+            {"role": "assistant", "content": [{"type": "text", "text": "<tool_call>{}</tool_call>"}]},
+        ]
+        assert count_tool_call_requests(messages) == 1
+
     def test_extract_session_name_strips_timestamp_suffix(self):
         path = Path("arxiv-python-1769035200000000001.jsonl")
         assert extract_session_name_from_path(path) == "arxiv-python"
@@ -774,3 +781,96 @@ class TestTurnCounting:
         _, assistant_turns, assistant_tool_turns = count_turn_groups(messages)
         assert assistant_turns == 2
         assert assistant_tool_turns == 2
+
+    def test_ignores_legacy_function_role_for_grouping(self):
+        messages = [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "C"},
+            {"role": "function", "name": "my_tool", "content": "{}"},
+            {"role": "assistant", "content": "D"},
+        ]
+
+        client_turns, assistant_turns, assistant_tool_turns = count_turn_groups(messages)
+        assert client_turns == 1
+        assert assistant_turns == 1
+        assert assistant_tool_turns == 0
+
+    def test_detects_tool_request_in_content_list(self):
+        messages = [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": [{"type": "text", "text": "<tool_call>{}</tool_call>"}]},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        client_turns, assistant_turns, assistant_tool_turns = count_turn_groups(messages)
+        assert client_turns == 1
+        assert assistant_turns == 1
+        assert assistant_tool_turns == 1
+
+
+class TestGooseInfoCleanup:
+    def test_drops_user_message_fully_wrapped_in_info_msg_tags(self):
+        messages = [
+            {"role": "user", "content": "<info-msg>\nIt is currently 2026-01-21\n</info-msg>"},
+            {"role": "user", "content": "prefix <info-msg>keep</info-msg> suffix"},
+            {"role": "assistant", "content": "<info-msg>\nkeep\n</info-msg>"},
+        ]
+
+        cleaned = apply_cleanups(messages, CleanupConfig(drop_goose_info_user_messages=True))
+        assert [m["role"] for m in cleaned] == ["user", "assistant"]
+        assert cleaned[0]["content"] == "prefix <info-msg>keep</info-msg> suffix"
+
+    def test_cleanup_changes_turn_counts_when_injected_between_tool_and_assistant(self, tmp_path: Path):
+        day_dir = tmp_path / "2026-01-21"
+        day_dir.mkdir(parents=True)
+        session_file = day_dir / "arxiv-1.jsonl"
+
+        entry = LogEntry(
+            timestamp=datetime(2026, 1, 21, tzinfo=timezone.utc),
+            session_id="session-1",
+            request=RequestPayload(
+                model="gpt-4o-mini",
+                messages=[
+                    Message(role="user", content="Hi"),
+                    Message(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "tool_a", "arguments": "{}"},
+                            }
+                        ],
+                    ),
+                    Message(role="tool", content="{}", tool_call_id="call_1"),
+                    Message(
+                        role="user",
+                        content="<info-msg>\nIt is currently 2026-01-21 13:40:00\nWorking directory: /tmp/x\n</info-msg>",
+                    ),
+                ],
+            ),
+            response=ResponsePayload(
+                id="resp-1",
+                choices=[ResponseChoice(index=0, message=Message(role="assistant", content="Done"))],
+            ),
+        )
+        session_file.write_text(
+            json.dumps(entry.model_dump(mode="json"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, _, samples_no_cleanup = process_logs_directory_with_tool_usage(
+            tmp_path, cleanup=CleanupConfig(drop_goose_info_user_messages=False)
+        )
+        assert samples_no_cleanup[0].client_turns == 2
+        assert samples_no_cleanup[0].assistant_turns == 2
+        assert samples_no_cleanup[0].assistant_turns_with_tools == 1
+
+        _, _, samples_cleanup = process_logs_directory_with_tool_usage(
+            tmp_path, cleanup=CleanupConfig(drop_goose_info_user_messages=True)
+        )
+        assert samples_cleanup[0].client_turns == 1
+        assert samples_cleanup[0].assistant_turns == 1
+        assert samples_cleanup[0].assistant_turns_with_tools == 1

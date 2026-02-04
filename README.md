@@ -174,6 +174,7 @@ Notes:
 - When exporting by date (default), the report is grouped by `date` (the `scenario` column is empty).
 - When exporting by scenario (`--group-by scenario`), the report is grouped by `scenario` (the `date` column is empty).
 - When exporting as a single file (`--single-file`), the report contains a single rollup row (both `date` and `scenario` are empty).
+- By default the converter drops Goose-injected `role=user` messages that are fully wrapped in `<info-msg>...</info-msg>`. Disable with `--no-cleanup-goose-info`.
 
 ### Enable tool structured output (JSON tool calls)
 
