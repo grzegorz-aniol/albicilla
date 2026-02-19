@@ -17,6 +17,7 @@ from conv.processor import (
     process_session,
     process_logs_directory_with_tool_usage,
     process_session_with_stats,
+    SessionValidationError,
     serialize_tool_calls,
     serialize_tool_result,
     transform_messages,
@@ -404,8 +405,23 @@ class TestProcessSession:
         tools: list[dict] | None = None,
         response_content: str = "Response",
     ) -> LogEntry:
-        return LogEntry(
+        return self._make_log_entry_at(
             timestamp=datetime.now(timezone.utc),
+            messages=messages,
+            tools=tools,
+            response_content=response_content,
+        )
+
+    def _make_log_entry_at(
+        self,
+        *,
+        timestamp: datetime,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        response_content: str = "Response",
+    ) -> LogEntry:
+        return LogEntry(
+            timestamp=timestamp,
             session_id="test-session",
             request=RequestPayload(
                 model="gpt-4o",
@@ -460,6 +476,142 @@ class TestProcessSession:
         assert result is not None
         assert len(result.tools) == 1
         assert result.tools[0]["name"] == "my_tool"
+
+    def test_timestamp_must_increase(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}],
+        )
+        with pytest.raises(SessionValidationError):
+            process_session([entry1, entry2], json_tool_calls=False)
+
+    def test_message_count_cannot_decrease(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+        entry3 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+            response_content="Hi there!",
+        )
+        result = process_session([entry1, entry2, entry3], json_tool_calls=False)
+        assert result is not None
+
+    def test_trailing_single_system_is_ignored(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+            response_content="Hi there!",
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[{"role": "system", "content": "Injected"}],
+            response_content="Ignored",
+        )
+        result = process_session([entry1, entry2], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[-1]["role"] == "assistant"
+        assert result.messages[-1]["content"] == "Hi there!"
+
+    def test_trailing_single_non_system_fails(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Reset"}],
+        )
+        with pytest.raises(SessionValidationError):
+            process_session([entry1, entry2], json_tool_calls=False)
+
+    def test_last_entry_must_have_max_message_count(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+            ],
+            response_content="Latest",
+        )
+        entry3 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+            response_content="Should be ignored",
+        )
+        result = process_session([entry1, entry2, entry3], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[-1]["content"] == "Latest"
+
+    def test_earlier_single_system_allowed(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "system", "content": "Start"}],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+            response_content="Hi there!",
+        )
+        result = process_session([entry1, entry2], json_tool_calls=False)
+        assert result is not None
+
+    def test_single_system_mid_session_fails(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "system", "content": "Start"}],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[
+                {"role": "system", "content": "Start"},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+        entry3 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+            messages=[{"role": "system", "content": "Reset"}],
+        )
+        with pytest.raises(SessionValidationError):
+            process_session([entry1, entry2, entry3], json_tool_calls=False)
+
+    def test_only_single_system_fails(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "system", "content": "Start"}],
+        )
+        with pytest.raises(SessionValidationError):
+            process_session([entry1], json_tool_calls=False)
 
 
 class TestToolUsageCounting:
@@ -820,6 +972,22 @@ class TestGooseInfoCleanup:
         cleaned = apply_cleanups(messages, CleanupConfig(drop_goose_info_user_messages=True))
         assert [m["role"] for m in cleaned] == ["user", "assistant"]
         assert cleaned[0]["content"] == "prefix <info-msg>keep</info-msg> suffix"
+    def test_drops_goose_system_instruction_message(self):
+        messages = [
+            {"role": "system", "content": (
+                "You are a general-purpose AI agent called goose, created by Block.\n"
+                "Extensions allow other applications to provide context to goose."
+            )},
+            {"role": "system", "content": "Keep this system rule."},
+            {"role": "user", "content": "Hi"},
+        ]
+
+        cleaned = apply_cleanups(messages, CleanupConfig(drop_goose_info_user_messages=True))
+        system_messages = [m["content"] for m in cleaned if m["role"] == "system"]
+        assert system_messages == ["Keep this system rule."]
+
+
+
 
     def test_cleanup_changes_turn_counts_when_injected_between_tool_and_assistant(self, tmp_path: Path):
         day_dir = tmp_path / "2026-01-21"

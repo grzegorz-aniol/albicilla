@@ -19,7 +19,7 @@ from .integrity import (
     analyze_export_record,
     analyze_tool_result_heuristics,
 )
-from .processor import process_logs_directory_with_tool_usage
+from .processor import SessionValidationError, process_logs_directory_with_tool_usage
 from .tool_usage import ToolUsageGroupBy, aggregate_tool_usage
 
 DEFAULT_LOGS_DIR = Path.cwd() / "proxy_logs"
@@ -98,10 +98,10 @@ def process(
         "--anonymize/--no-anonymize",
         help="Anonymize emails in exported JSONL conversation records",
     ),
-    cleanup_goose_info: bool = typer.Option(
+    cleanup_goose: bool = typer.Option(
         True,
-        "--cleanup-goose-info/--no-cleanup-goose-info",
-        help="Drop Goose-injected `role=user` messages fully wrapped in `<info-msg>...</info-msg>`",
+        "--cleanup-goose/--no-cleanup-goose",
+        help="Apply all Goose cleanup rules (info-msg user drops, system prompt drops, summary trick drops)",
     ),
 ) -> None:
     """Process proxy logs and export session JSONL files."""
@@ -171,13 +171,20 @@ def process(
         )
 
     try:
-        cleanup_config = CleanupConfig(drop_goose_info_user_messages=cleanup_goose_info)
+        cleanup_config = CleanupConfig(
+            drop_goose_info_user_messages=cleanup_goose,
+            drop_summary_trick_entries=cleanup_goose,
+        )
         records_by_date, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(
             logs_dir,
             json_tool_calls=json_tool_calls,
             cleanup=cleanup_config,
+            trace=verbose,
             integrity_callback=_integrity_callback if integrity_analysis else None,
         )
+    except SessionValidationError as exc:
+        typer.echo(f"ERROR: {exc}")
+        raise typer.Exit(code=1)
     finally:
         if integrity_handle is not None:
             integrity_handle.close()
