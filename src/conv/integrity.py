@@ -8,7 +8,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .models import ConversationRecord
+from .models import ConversationRecord, LogEntry
+from .processor import (
+    build_normalized_role_trace,
+    build_normalized_role_trace_tokens,
+    is_prefix_with_assistant_equivalence,
+)
 
 
 class IntegritySeverity(StrEnum):
@@ -81,7 +86,7 @@ def analyze_export_record(
     elif not tools:
         findings.append(
             IntegrityFinding(
-                severity=IntegritySeverity.WARNING,
+                severity=IntegritySeverity.ERROR,
                 session=session,
                 input_file=input_file,
                 message="tools list is empty",
@@ -194,6 +199,16 @@ def analyze_tool_result_heuristics(
             i += 1
             continue
 
+        if _has_legacy_function_call(message):
+            findings.append(
+                IntegrityFinding(
+                    severity=IntegritySeverity.ERROR,
+                    session=session,
+                    input_file=input_file,
+                    message="Legacy function_call format is not supported",
+                )
+            )
+
         tool_calls = _extract_tool_calls_from_assistant(message)
         if not tool_calls:
             i += 1
@@ -210,8 +225,50 @@ def analyze_tool_result_heuristics(
             input_file=input_file,
         )
         findings.extend(block_findings)
+        findings.extend(
+            _analyze_reverse_tool_results(
+                messages[block_start:block_end],
+                tool_calls,
+                session=session,
+                input_file=input_file,
+            )
+        )
 
         i = block_end
+
+    return findings
+
+
+def analyze_role_sequence_consistency(
+    entries: list[LogEntry] | None,
+    *,
+    session: str,
+    input_file: Path,
+) -> list[IntegrityFinding]:
+    """Ensure each entry's role trace is a prefix of the next."""
+    if not entries or len(entries) < 2:
+        return []
+
+    traces = [build_normalized_role_trace_tokens(entry.request.messages) for entry in entries]
+    findings: list[IntegrityFinding] = []
+
+    for idx in range(len(traces) - 1):
+        current = traces[idx]
+        nxt = traces[idx + 1]
+        if not is_prefix_with_assistant_equivalence(current, nxt):
+            current_display = build_normalized_role_trace(entries[idx].request.messages)
+            next_display = build_normalized_role_trace(entries[idx + 1].request.messages)
+            findings.append(
+                IntegrityFinding(
+                    severity=IntegritySeverity.ERROR,
+                    session=session,
+                    input_file=input_file,
+                    message=(
+                        "Role sequence mismatch between entries "
+                        f"{idx + 1} and {idx + 2}: '{current_display}' -> '{next_display}'"
+                    ),
+                )
+            )
 
     return findings
 
@@ -243,14 +300,15 @@ def _extract_tool_calls_from_assistant(message: dict[str, Any]) -> list[tuple[st
                 continue
             extracted.append((call_id, name))
 
-    function_call = message.get("function_call")
-    if isinstance(function_call, dict):
-        # Legacy / single-tool format does not provide a stable call id in logs.
-        name = function_call.get("name")
-        if isinstance(name, str) and name:
-            extracted.append(("<function_call>", name))
-
     return extracted
+
+
+def _has_legacy_function_call(message: dict[str, Any]) -> bool:
+    function_call = message.get("function_call")
+    if not isinstance(function_call, dict):
+        return False
+    name = function_call.get("name")
+    return isinstance(name, str) and bool(name)
 
 
 def _index_tool_results(messages: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -327,6 +385,45 @@ def _analyze_tool_block(
                     message=f"Missing tool result ({tool_name}, tool_call_id={call_id})",
                 )
             )
+
+    return findings
+
+
+def _analyze_reverse_tool_results(
+    messages: list[dict[str, Any]],
+    tool_calls: list[tuple[str, str]],
+    *,
+    session: str,
+    input_file: Path,
+) -> list[IntegrityFinding]:
+    """Flag tool results that do not match any tool call in the block."""
+    expected_ids = {call_id for call_id, _ in tool_calls}
+    findings: list[IntegrityFinding] = []
+
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            if tool_call_id not in expected_ids:
+                findings.append(
+                    IntegrityFinding(
+                        severity=IntegritySeverity.ERROR,
+                        session=session,
+                        input_file=input_file,
+                        message=f"Tool result has no matching tool call (tool_call_id={tool_call_id})",
+                    )
+                )
+            continue
+
+        findings.append(
+            IntegrityFinding(
+                severity=IntegritySeverity.ERROR,
+                session=session,
+                input_file=input_file,
+                message="Tool result has no matching tool call (missing tool_call_id)",
+            )
+        )
 
     return findings
 

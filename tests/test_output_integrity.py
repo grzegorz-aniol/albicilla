@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import warnings
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -79,10 +78,7 @@ def _assert_assistant_message(
         return
 
     if not json_tool_calls_enabled:
-        warnings.warn(
-            "tool_call markup present but json-tool-calls flag disabled",
-            stacklevel=2,
-        )
+        pass
 
     assert content.count("<tool_call>") == content.count(
         "</tool_call>"
@@ -93,11 +89,7 @@ def _assert_assistant_message(
 def _assert_tools_used(payload: dict, path: Path, line_number: int) -> None:
     tools = payload.get("tools")
     assert isinstance(tools, list), "tools must be a list"
-    if not tools:
-        warnings.warn(
-            f"tools list is empty in {path.name}:{line_number}",
-            stacklevel=2,
-        )
+    assert tools, f"tools list is empty in {path.name}:{line_number}"
 
 def _iter_email_matches(value: object) -> Iterator[str]:
     match value:

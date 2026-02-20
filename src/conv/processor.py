@@ -108,8 +108,8 @@ def _process_validated_session(
         msg.model_dump(exclude_none=True) for msg in last_entry.request.messages
     ]
 
-    # Extract tools from request (or empty list)
-    tools = extract_tool_schemas(last_entry.request.tools)
+    # Extract tools from all requests (or empty list)
+    tools = extract_tool_schemas(collect_session_tools(validated_entries))
 
     # Append final response if available
     if last_entry.response and last_entry.response.choices:
@@ -393,6 +393,37 @@ def extract_tool_schemas(tools: list[ToolDefinition] | None) -> list[dict[str, A
     return flattened
 
 
+def collect_session_tools(entries: list[LogEntry]) -> list[ToolDefinition]:
+    """Collect tool definitions across all entries, deduped by name (first wins)."""
+    collected: list[ToolDefinition] = []
+    seen_names: set[str] = set()
+
+    for entry in entries:
+        tools = entry.request.tools or []
+        for tool in tools:
+            name = _extract_tool_definition_name(tool)
+            if isinstance(name, str) and name:
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+            collected.append(tool)
+
+    return collected
+
+
+def _extract_tool_definition_name(tool: ToolDefinition) -> str | None:
+    function_block = tool.function
+    if isinstance(function_block, dict):
+        name = function_block.get("name")
+        if isinstance(name, str):
+            return name
+    dumped = tool.model_dump(exclude_none=True)
+    name = dumped.get("name")
+    if isinstance(name, str):
+        return name
+    return None
+
+
 def coerce_arguments(arguments: Any) -> Any:
     """Parse the function arguments string into structured data when possible."""
     if isinstance(arguments, dict):
@@ -448,6 +479,16 @@ def validate_session_entries(
         if source_path is not None:
             return f"{message} (session={entry.session_id}, file={source_path})"
         return f"{message} (session={entry.session_id})"
+
+    expected_session_id = entries[0].session_id
+    for idx, entry in enumerate(entries, start=1):
+        if entry.session_id != expected_session_id:
+            raise SessionValidationError(
+                _format_error(
+                    "Session ID mismatch at entry {index}".format(index=idx),
+                    entry,
+                )
+            )
 
     previous_timestamp = None
     for idx, entry in enumerate(entries, start=1):
@@ -584,7 +625,7 @@ def process_logs_directory_with_tool_usage(
     cleanup: CleanupConfig | None = None,
     trace: bool = False,
     integrity_callback: Callable[
-        [Path, str, ConversationRecord | None, ConversationRecord | None, bool], None
+        [Path, str, ConversationRecord | None, ConversationRecord | None, bool, list[LogEntry] | None], None
     ]
     | None = None,
 ) -> tuple[dict[date, list[ConversationRecord]], dict[str, list[ConversationRecord]], list[SessionToolUsageSample]]:
@@ -603,13 +644,18 @@ def process_logs_directory_with_tool_usage(
         if not entries:
             logger.warning("Empty or invalid session file: {path}", path=session_path)
             if integrity_callback is not None:
-                integrity_callback(session_path, scenario, None, None, json_tool_calls)
+                integrity_callback(session_path, scenario, None, None, json_tool_calls, None)
             continue
 
-        validation = validate_session_entries(entries, source_path=session_path)
+        try:
+            validation = validate_session_entries(entries, source_path=session_path)
+        except SessionValidationError:
+            if trace:
+                emit_role_trace(entries)
+            raise
         if not validation.entries:
             if integrity_callback is not None:
-                integrity_callback(session_path, scenario, None, None, json_tool_calls)
+                integrity_callback(session_path, scenario, None, None, json_tool_calls, None)
             continue
 
         if trace and validation.had_warning:
@@ -622,7 +668,7 @@ def process_logs_directory_with_tool_usage(
         )
         if raw_record is None:
             if integrity_callback is not None:
-                integrity_callback(session_path, scenario, None, None, json_tool_calls)
+                integrity_callback(session_path, scenario, None, None, json_tool_calls, validation.entries)
             continue
 
         tool_call_count = count_tool_call_requests(raw_record.messages)
@@ -632,7 +678,7 @@ def process_logs_directory_with_tool_usage(
             record = ConversationRecord(messages=transform_messages(raw_record.messages), tools=raw_record.tools)
 
         if integrity_callback is not None:
-            integrity_callback(session_path, scenario, raw_record, record, json_tool_calls)
+            integrity_callback(session_path, scenario, raw_record, record, json_tool_calls, validation.entries)
 
         session_date = extract_date_from_path(session_path, logs_dir)
         if session_date is None:
@@ -659,29 +705,32 @@ def process_logs_directory_with_tool_usage(
 def emit_role_trace(entries: list[LogEntry]) -> None:
     """Log per-request role traces for a session file."""
     logger.info("")
-    base_sequences: list[str] = []
+    base_sequences: list[list[str]] = []
     display_sequences: list[str] = []
     for index, entry in enumerate(entries, start=1):
-        roles = build_role_trace(entry.request.messages)
+        roles = build_role_trace_tokens(entry.request.messages)
         tools = entry.request.tools or []
         mcps = extract_tool_mcp_prefixes(tools)
         mcps_label = ",".join(mcps) if mcps else "-"
         response_marker = build_response_marker(entry)
-        roles_with_response = f"{roles}{response_marker}"
+        response_id = entry.response.id if entry.response is not None else "-"
+        roles_with_response = _join_trace_tokens(roles, response_marker=response_marker)
         base_sequences.append(roles)
         display_sequences.append(roles_with_response)
         line = (
             f"<{index:03d}>: roles={roles_with_response} "
             f"msgs={len(entry.request.messages)} "
-            f"tools={len(tools)} mcps={mcps_label}"
+            f"tools={len(tools)} mcps={mcps_label} resp.id={response_id}"
         )
         logger.info(line)
 
     for idx in range(len(base_sequences) - 1):
         current = base_sequences[idx]
         nxt = base_sequences[idx + 1]
-        if not nxt.startswith(current):
-            overlap = _overlap_suffix_prefix(current, nxt)
+        if not _tokens_start_with(nxt, current):
+            prefix_len = _common_prefix_len_with_assistant_equivalence(current, nxt)
+            prev_start_idx = prefix_len if prefix_len > 0 else 1
+            next_start_idx = prefix_len if prefix_len > 0 else 1
             logger.info("")
             logger.info(
                 "CTX-SWITCH at <{cur:03d}> -> <{nxt:03d}>: roles {cur_roles} -> {next_roles}",
@@ -693,45 +742,161 @@ def emit_role_trace(entries: list[LogEntry]) -> None:
             logger.info("Previous chat (entry <{cur:03d}>):", cur=idx + 1)
             _log_entry_messages(
                 entries[idx],
-                start_idx=_start_from_last_common_prev(current_len=len(current), overlap=overlap),
+                start_idx=prev_start_idx,
                 max_count=5,
             )
             logger.info("New chat (entry <{nxt:03d}>):", nxt=idx + 2)
             _log_entry_messages(
                 entries[idx + 1],
-                start_idx=_start_from_last_common_next(overlap=overlap),
+                start_idx=next_start_idx,
                 max_count=5,
             )
 
 
 def build_role_trace(messages: list[Any]) -> str:
     """Build an ASCII role trace for the message sequence."""
+    return _join_trace_tokens(build_role_trace_tokens(messages))
+
+
+def build_normalized_role_trace(messages: list[Message]) -> str:
+    """Build a role trace with developer normalized to system."""
+    return _join_trace_tokens(build_normalized_role_trace_tokens(messages))
+
+
+def build_role_trace_tokens(messages: list[Any]) -> list[str]:
+    """Build a role trace token list for the message sequence."""
     trace: list[str] = []
     for message in messages:
-        role = getattr(message, "role", None)
-        content = getattr(message, "content", None)
+        role = _get_message_field(message, "role")
+        content = _get_message_field(message, "content")
+        tool_calls = _get_message_field(message, "tool_calls")
         if role == "user":
             trace.append(classify_user_message(content))
         elif role == "system":
             trace.append("S")
         elif role == "assistant":
-            trace.append("A")
+            trace.append(_classify_assistant_message(content, tool_calls))
         elif role == "tool":
             trace.append("T")
         elif role == "developer":
             trace.append("D")
         elif isinstance(role, str) and role:
             trace.append(role[:1].upper())
-    return "".join(trace)
+    return trace
 
 
-def _overlap_suffix_prefix(left: str, right: str) -> int:
-    """Return max overlap where left suffix equals right prefix."""
-    max_len = min(len(left), len(right))
-    for length in range(max_len, 0, -1):
-        if left[-length:] == right[:length]:
-            return length
-    return 0
+def build_normalized_role_trace_tokens(messages: list[Message]) -> list[str]:
+    """Build a role trace token list with developer normalized to system."""
+    trace: list[str] = []
+    for message in messages:
+        role = message.role
+        if role == "developer":
+            role = "system"
+
+        if role == "user":
+            trace.append(classify_user_message(message.content))
+        elif role == "system":
+            trace.append("S")
+        elif role == "assistant":
+            trace.append(_classify_assistant_message(message.content, message.tool_calls))
+        elif role == "tool":
+            trace.append("T")
+        elif isinstance(role, str) and role:
+            trace.append(role[:1].upper())
+    return trace
+
+
+def _classify_assistant_message(content: Any, tool_calls: Any) -> str:
+    has_text = _has_non_whitespace_text(content)
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    if has_text and has_tool_calls:
+        return "Act"
+    if has_text:
+        return "Ac"
+    if has_tool_calls:
+        return "At"
+    return "A"
+
+
+def _has_non_whitespace_text(content: Any) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        parts: list[str] = []
+        for chunk in content:
+            if isinstance(chunk, dict) and chunk.get("type") == "text" and isinstance(chunk.get("text"), str):
+                parts.append(chunk["text"])
+        return bool("".join(parts).strip())
+    return False
+
+
+def _join_trace_tokens(tokens: list[str], *, response_marker: str = "") -> str:
+    if response_marker:
+        tokens = [*tokens, response_marker]
+    return " ".join(tokens)
+
+
+def _tokens_start_with(sequence: list[str], prefix: list[str]) -> bool:
+    if len(sequence) < len(prefix):
+        return False
+    return sequence[: len(prefix)] == prefix
+
+
+def _common_prefix_len_with_assistant_equivalence(left: list[str], right: list[str]) -> int:
+    """Return matched prefix length allowing AcAt -> Act folding."""
+    left_idx = 0
+    right_idx = 0
+    matched = 0
+    while left_idx < len(left) and right_idx < len(right):
+        left_token = left[left_idx]
+        right_token = right[right_idx]
+        if left_token == right_token:
+            left_idx += 1
+            right_idx += 1
+            matched += 1
+            continue
+        if (
+            left_token == "Ac"
+            and left_idx + 1 < len(left)
+            and left[left_idx + 1] == "At"
+            and right_token == "Act"
+        ):
+            left_idx += 2
+            right_idx += 1
+            matched += 1
+            continue
+        break
+    return matched
+
+
+def is_prefix_with_assistant_equivalence(previous: list[str], nxt: list[str]) -> bool:
+    """Return True if previous matches the start of nxt with AcAt -> Act folding."""
+    prev_idx = 0
+    next_idx = 0
+    while prev_idx < len(previous) and next_idx < len(nxt):
+        prev_token = previous[prev_idx]
+        next_token = nxt[next_idx]
+        if prev_token == next_token:
+            prev_idx += 1
+            next_idx += 1
+            continue
+        if (
+            prev_token == "Ac"
+            and prev_idx + 1 < len(previous)
+            and previous[prev_idx + 1] == "At"
+            and next_token == "Act"
+        ):
+            prev_idx += 2
+            next_idx += 1
+            continue
+        return False
+    return prev_idx == len(previous)
+
+
+def _get_message_field(message: Any, key: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(key)
+    return getattr(message, key, None)
 
 
 def _start_from_last_common_prev(*, current_len: int, overlap: int) -> int:
@@ -807,7 +972,7 @@ def _log_entry_messages(entry: LogEntry, *, start_idx: int = 1, max_count: int =
     for idx, message in enumerate(entry.request.messages, start=1):
         if idx < start_idx:
             continue
-        if max_count > 0 and emitted >= max_count:
+        if 0 < max_count <= emitted:
             break
         role = getattr(message, "role", "")
         content = _stringify_message_content(getattr(message, "content", None))

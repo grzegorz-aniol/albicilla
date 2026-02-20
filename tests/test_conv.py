@@ -477,6 +477,48 @@ class TestProcessSession:
         assert len(result.tools) == 1
         assert result.tools[0]["name"] == "my_tool"
 
+    def test_tools_aggregated_across_entries(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+            tools=[{"type": "function", "function": {"name": "tool_a", "parameters": {}}}],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}],
+            tools=[{"type": "function", "function": {"name": "tool_b", "parameters": {}}}],
+        )
+        result = process_session([entry1, entry2], json_tool_calls=False)
+        assert result is not None
+        tool_names = {tool["name"] for tool in result.tools}
+        assert tool_names == {"tool_a", "tool_b"}
+
+    def test_tools_first_definition_wins(self):
+        entry1 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "tool_a", "parameters": {"properties": {"x": {"type": "string"}}}},
+                }
+            ],
+        )
+        entry2 = self._make_log_entry_at(
+            timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+            messages=[{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "tool_a", "parameters": {"properties": {"y": {"type": "number"}}}},
+                }
+            ],
+        )
+        result = process_session([entry1, entry2], json_tool_calls=False)
+        assert result is not None
+        assert len(result.tools) == 1
+        assert "x" in result.tools[0]["parameters"]["properties"]
+
     def test_timestamp_must_increase(self):
         entry1 = self._make_log_entry_at(
             timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -525,9 +567,10 @@ class TestProcessSession:
         )
         result = process_session([entry1, entry2], json_tool_calls=False)
         assert result is not None
-        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == "Injected"
         assert result.messages[-1]["role"] == "assistant"
-        assert result.messages[-1]["content"] == "Hi there!"
+        assert result.messages[-1]["content"] == "Ignored"
 
     def test_trailing_single_non_system_fails(self):
         entry1 = self._make_log_entry_at(
@@ -538,8 +581,10 @@ class TestProcessSession:
             timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
             messages=[{"role": "user", "content": "Reset"}],
         )
-        with pytest.raises(SessionValidationError):
-            process_session([entry1, entry2], json_tool_calls=False)
+        result = process_session([entry1, entry2], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["content"] == "Reset"
 
     def test_last_entry_must_have_max_message_count(self):
         entry1 = self._make_log_entry_at(
@@ -602,16 +647,19 @@ class TestProcessSession:
             timestamp=datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
             messages=[{"role": "system", "content": "Reset"}],
         )
-        with pytest.raises(SessionValidationError):
-            process_session([entry1, entry2, entry3], json_tool_calls=False)
+        result = process_session([entry1, entry2, entry3], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[1]["role"] == "user"
 
     def test_only_single_system_fails(self):
         entry1 = self._make_log_entry_at(
             timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
             messages=[{"role": "system", "content": "Start"}],
         )
-        with pytest.raises(SessionValidationError):
-            process_session([entry1], json_tool_calls=False)
+        result = process_session([entry1], json_tool_calls=False)
+        assert result is not None
+        assert result.messages[0]["role"] == "system"
 
 
 class TestToolUsageCounting:

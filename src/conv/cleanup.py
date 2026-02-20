@@ -19,7 +19,7 @@ class CleanupConfig:
 
     drop_goose_info_user_messages: bool = True
     drop_summary_trick_entries: bool = True
-    drop_summary_trick_entries: bool = True
+    drop_empty_assistant_followed_by_assistant: bool = True
 
 
 def apply_cleanups(messages: list[dict[str, Any]], config: CleanupConfig) -> list[dict[str, Any]]:
@@ -28,24 +28,31 @@ def apply_cleanups(messages: list[dict[str, Any]], config: CleanupConfig) -> lis
     if config.drop_goose_info_user_messages:
         cleaned = _drop_goose_info(cleaned)
         cleaned = _remove_goose_system_instruction(cleaned)
+    if config.drop_empty_assistant_followed_by_assistant:
+        cleaned = _drop_empty_assistant_followed_by_assistant(cleaned)
     return cleaned
 
 
 def _remove_goose_system_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop Goose default system instruction messages.
+    """Normalize Goose default system instruction messages.
 
-    Removes any `role=system` message whose text matches the default Goose
-    bootstrap prompt (identified by the phrase `general-purpose AI agent called goose`).
+    Replaces any `role=system` message whose text matches the default Goose
+    bootstrap prompt (identified by the phrase `general-purpose AI agent called goose`)
+    with a concise, stable instruction.
     """
+    replacement_text = "You are a general-purpose AI agent"
     kept: list[dict[str, Any]] = []
     for message in messages:
-        if message.get('role') != 'system':
+        if message.get("role") != "system":
             kept.append(message)
             continue
 
-        content = message.get('content')
+        content = message.get("content")
         text = _content_to_text(content)
         if text is not None and _GOOSE_SYSTEM_INSTRUCTION_RE.search(text):
+            updated = dict(message)
+            updated["content"] = replacement_text
+            kept.append(updated)
             continue
 
         kept.append(message)
@@ -72,6 +79,33 @@ def _drop_goose_info(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         kept.append(message)
     return kept
+
+
+def _drop_empty_assistant_followed_by_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop empty assistant messages that are immediately followed by another assistant message."""
+    kept: list[dict[str, Any]] = []
+    for idx, message in enumerate(messages):
+        if (
+            message.get("role") == "assistant"
+            and idx + 1 < len(messages)
+            and messages[idx + 1].get("role") == "assistant"
+            and _is_empty_assistant_message(message)
+        ):
+            continue
+        kept.append(message)
+    return kept
+
+
+def _is_empty_assistant_message(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    text = _content_to_text(content)
+    if text is None or text.strip():
+        return False
+    if message.get("tool_calls"):
+        return False
+    if message.get("tool_call_id"):
+        return False
+    return True
 
 
 def _content_to_text(content: Any) -> str | None:

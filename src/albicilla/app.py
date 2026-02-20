@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from .config import Settings
-from .logging import append_session_entry, configure_logging
+from .logging import append_session_entry_async, configure_logging
 from .models import ChatCompletionRequest, SessionPrefixRequest
 from .session import clear_token_map, resolve_session_id, set_session_prefix
 from .upstream import (
@@ -130,7 +130,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
                 try:
-                    append_session_entry(settings, session_id, request_data, response_data)
+                    await append_session_entry_async(
+                        settings, session_id, request_data, response_data
+                    )
                     logger.debug(f"[{session_id}] Logged streaming response to session file")
                 except IOError as e:
                     logger.error(f"[{session_id}] Failed to write log: {e}")
@@ -174,7 +176,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Append to log file
         try:
-            append_session_entry(settings, session_id, request_data, response_data)
+            await append_session_entry_async(
+                settings, session_id, request_data, response_data
+            )
             logger.debug(f"[{session_id}] Logged to session file")
         except IOError as e:
             logger.error(f"[{session_id}] Failed to write log: {e}")

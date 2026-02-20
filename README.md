@@ -9,6 +9,7 @@ OpenAI-compatible logging pass-trough proxy that captures LLM requests/responses
 - Forwards requests to upstream LLM and logs request/response pairs
 - Per-session JSONL logging with automatic date-based organization
 - Session grouping via `user` field, headers, or bearer tokens
+- Per-session log writes are serialized in-process; multi-worker setups need external locking
 
 ## Installation
 

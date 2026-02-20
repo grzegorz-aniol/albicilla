@@ -11,15 +11,18 @@ from pathlib import Path
 import typer
 from loguru import logger
 
-from .models import ConversationRecord, SessionToolUsageRow
+from .models import ConversationRecord, LogEntry, SessionToolUsageRow
 from .anonymize import EmailAnonymizer
 from .cleanup import CleanupConfig
 from .integrity import (
     IntegrityFinding,
+    IntegritySeverity,
     analyze_export_record,
+    analyze_role_sequence_consistency,
     analyze_tool_result_heuristics,
 )
 from .processor import SessionValidationError, process_logs_directory_with_tool_usage
+from .processor import emit_role_trace
 from .tool_usage import ToolUsageGroupBy, aggregate_tool_usage
 
 DEFAULT_LOGS_DIR = Path.cwd() / "proxy_logs"
@@ -132,9 +135,11 @@ def process(
     # Process all sessions
     logger.info("Processing logs from {path}", path=logs_dir)
     findings_count = 0
+    error_count = 0
+    warning_count = 0
 
     def _write_findings(findings: list[IntegrityFinding]) -> None:
-        nonlocal findings_count
+        nonlocal findings_count, error_count, warning_count
         if not findings:
             return
         for finding in findings:
@@ -146,6 +151,10 @@ def process(
             if integrity_handle is not None:
                 integrity_handle.write(line + "\n")
             findings_count += 1
+            if finding.severity == IntegritySeverity.ERROR:
+                error_count += 1
+            elif finding.severity == IntegritySeverity.WARNING:
+                warning_count += 1
 
     def _integrity_callback(
         session_path: Path,
@@ -153,27 +162,39 @@ def process(
         raw_record: ConversationRecord | None,
         export_record: ConversationRecord | None,
         json_tool_calls_enabled: bool,
+        entries: list[LogEntry] | None,
     ) -> None:
-        _write_findings(
-            analyze_export_record(
+        findings = [
+            *analyze_export_record(
                 export_record,
                 session=scenario,
                 input_file=session_path,
                 json_tool_calls=json_tool_calls_enabled,
-            )
-        )
-        _write_findings(
-            analyze_tool_result_heuristics(
+            ),
+            *analyze_tool_result_heuristics(
                 raw_record,
                 session=scenario,
                 input_file=session_path,
-            )
-        )
+            ),
+            *analyze_role_sequence_consistency(
+                entries,
+                session=scenario,
+                input_file=session_path,
+            ),
+        ]
+
+        _write_findings(findings)
+
+        if verbose and entries is not None and any(
+            finding.severity == IntegritySeverity.ERROR for finding in findings
+        ):
+            emit_role_trace(entries)
 
     try:
         cleanup_config = CleanupConfig(
             drop_goose_info_user_messages=cleanup_goose,
             drop_summary_trick_entries=cleanup_goose,
+            drop_empty_assistant_followed_by_assistant=cleanup_goose,
         )
         records_by_date, records_by_scenario, tool_usage_samples = process_logs_directory_with_tool_usage(
             logs_dir,
@@ -224,6 +245,9 @@ def process(
         typer.echo(f"Wrote tool usage report to {report_path}")
 
     if integrity_analysis:
+        typer.echo(
+            f"Integrity summary: errors={error_count} warnings={warning_count} total={findings_count}"
+        )
         typer.echo(f"Wrote integrity report to {integrity_report_path} ({findings_count} findings)")
 
 
