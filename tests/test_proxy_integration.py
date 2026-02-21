@@ -163,6 +163,7 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
+            headers={"agent-session-id": "integration-basic"},
         )
 
         assert resp.status_code == 200
@@ -200,8 +201,8 @@ class TestIntegration:
         assert entry["session_id"] == "integration-test-session"
         assert entry["request"]["messages"][0]["content"] == "Test with header"
 
-    def test_chat_completion_with_user_field(self, server):
-        """User field in payload takes precedence over headers."""
+    def test_chat_completion_requires_session_header(self, server):
+        """Missing session header returns 400."""
         payload = {
             "messages": [{"role": "user", "content": "Test with user field"}],
             "user": "payload-user-session",
@@ -210,17 +211,13 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
-            headers={"X-Session-Id": "should-be-ignored"},
+            headers={"agent-session-id": "invalid-payload"},
         )
 
-        assert resp.status_code == 200
-
-        # Verify log file uses user field, not header
-        log_files = list(server["log_dir"].rglob("payload-user-session.jsonl"))
-        assert len(log_files) == 1
+        assert resp.status_code == 400
 
     def test_chat_completion_with_bearer_token(self, server):
-        """Bearer token creates consistent session mapping."""
+        """Bearer token is rejected when session header is required."""
         payload = {"messages": [{"role": "user", "content": "Bearer test"}]}
         headers = {"Authorization": "Bearer integration-test-token"}
 
@@ -236,17 +233,8 @@ class TestIntegration:
             headers=headers,
         )
 
-        assert resp1.status_code == 200
-        assert resp2.status_code == 200
-
-        # Both should go to same log file (bearer-* pattern)
-        bearer_logs = list(server["log_dir"].rglob("session-*.jsonl"))
-        assert len(bearer_logs) == 1
-
-        # Should have 2 entries
-        with open(bearer_logs[0]) as f:
-            entries = f.readlines()
-        assert len(entries) == 2
+        assert resp1.status_code == 400
+        assert resp2.status_code == 400
 
     def test_multiple_messages_in_request(self, server):
         """Request with multiple messages is handled correctly."""
@@ -264,6 +252,7 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
+            headers={"agent-session-id": "integration-multi"},
         )
 
         assert resp.status_code == 200
@@ -289,12 +278,12 @@ class TestIntegration:
         """Logs are organized in date folders."""
         payload = {
             "messages": [{"role": "user", "content": "Date partition test"}],
-            "user": "date-partition-test",
         }
 
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
+            headers={"agent-session-id": "date-partition-test"},
         )
 
         assert resp.status_code == 200
@@ -315,6 +304,7 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
+            headers={"agent-session-id": "id-test"},
         )
         assert resp.status_code == 200
         assert "id" in resp.json()
@@ -323,7 +313,6 @@ class TestIntegration:
         """Unknown fields in request are logged for completeness."""
         payload = {
             "messages": [{"role": "user", "content": "Extra fields test"}],
-            "user": "extra-fields-test",
             "custom_field": "custom_value",
             "another_field": {"nested": True},
         }
@@ -331,6 +320,7 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
+            headers={"agent-session-id": "extra-fields-test"},
         )
 
         assert resp.status_code == 200
@@ -342,4 +332,3 @@ class TestIntegration:
 
         assert entry["request"]["custom_field"] == "custom_value"
         assert entry["request"]["another_field"] == {"nested": True}
-

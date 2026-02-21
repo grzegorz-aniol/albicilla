@@ -12,6 +12,16 @@ from .config import Settings
 _token_session_map: dict[str, str] = {}
 _token_lock = threading.Lock()
 _session_prefix: str | None = None
+_SINGLE_SESSION_ID = "single-session"
+
+
+class MissingSessionHeaderError(RuntimeError):
+    """Raised when a required session header is missing."""
+
+    def __init__(self, required_header: str, fallback_header: str | None = None) -> None:
+        super().__init__(required_header)
+        self.required_header = required_header
+        self.fallback_header = fallback_header
 
 
 def set_session_prefix(prefix: str | None) -> None:
@@ -45,10 +55,14 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
     """Resolve the session ID using the defined fallback strategy.
 
     Resolution order:
-    1. `user` field from request payload
+    Required mode:
+    1. Configured session header (default: agent-session-id)
     2. X-Session-Id header
-    3. Bearer token mapping (persists in-memory for process lifetime)
-    4. Timestamp fallback (per request)
+
+    Legacy mode (when require_session_header is False):
+    1. X-Session-Id header
+    2. Bearer token mapping (optional)
+    3. Single-session fallback
 
     Args:
         request: The FastAPI request object.
@@ -58,27 +72,33 @@ async def resolve_session_id(request: Request, payload_user: str | None, setting
     Returns:
         The resolved session identifier.
     """
-    # 1. Check request payload user field
-    if payload_user:
-        return payload_user
+    _ = payload_user
+    if settings.require_session_header:
+        session_header = request.headers.get(settings.session_header)
+        if session_header:
+            return session_header
 
-    # 2. Check session header
-    session_header = request.headers.get(settings.session_header)
-    if session_header:
-        return session_header
+        legacy_header = request.headers.get("X-Session-Id")
+        if legacy_header:
+            return legacy_header
 
-    # 3. Check Authorization bearer token
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:].strip()
-        if token:
-            with _token_lock:
-                if token not in _token_session_map:
-                    _token_session_map[token] = _generate_session_id("session")
-                return _token_session_map[token]
+        raise MissingSessionHeaderError(settings.session_header, "X-Session-Id")
 
-    # 4. Fallback to a generated timestamp-based ID
-    return _generate_session_id("anon")
+    legacy_header = request.headers.get("X-Session-Id")
+    if legacy_header:
+        return legacy_header
+
+    if settings.allow_bearer_fallback:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                with _token_lock:
+                    if token not in _token_session_map:
+                        _token_session_map[token] = _generate_session_id("session")
+                    return _token_session_map[token]
+
+    return _SINGLE_SESSION_ID
 
 
 def clear_token_map() -> None:

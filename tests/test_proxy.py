@@ -52,6 +52,28 @@ def settings(temp_log_dir: Path) -> Settings:
 
 
 @pytest.fixture
+def legacy_settings(temp_log_dir: Path) -> Settings:
+    """Settings with header enforcement disabled and bearer fallback enabled."""
+    return Settings(
+        log_root=temp_log_dir,
+        upstream_endpoint="http://localhost:11434",
+        require_session_header=False,
+        allow_bearer_fallback=True,
+    )
+
+
+@pytest.fixture
+def single_session_settings(temp_log_dir: Path) -> Settings:
+    """Settings with header enforcement disabled and no bearer fallback."""
+    return Settings(
+        log_root=temp_log_dir,
+        upstream_endpoint="http://localhost:11434",
+        require_session_header=False,
+        allow_bearer_fallback=False,
+    )
+
+
+@pytest.fixture
 def mock_upstream():
     """Mock the upstream forward_request function."""
     with patch("albicilla.app.forward_request", new_callable=AsyncMock) as mock:
@@ -65,6 +87,24 @@ def client(settings: Settings, mock_upstream) -> TestClient:
     clear_token_map()
     clear_session_prefix()
     app = create_app(settings)
+    return TestClient(app)
+
+
+@pytest.fixture
+def legacy_client(legacy_settings: Settings, mock_upstream) -> TestClient:
+    """Client with legacy session resolution enabled."""
+    clear_token_map()
+    clear_session_prefix()
+    app = create_app(legacy_settings)
+    return TestClient(app)
+
+
+@pytest.fixture
+def single_session_client(single_session_settings: Settings, mock_upstream) -> TestClient:
+    """Client with single-session fallback enabled."""
+    clear_token_map()
+    clear_session_prefix()
+    app = create_app(single_session_settings)
     return TestClient(app)
 
 
@@ -83,7 +123,11 @@ class TestSchemaRoundTrip:
 
     def test_minimal_payload_validates(self, client: TestClient, minimal_payload: dict):
         """Ensure minimal payload validates and returns expected structure."""
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"agent-session-id": "schema-minimal"},
+        )
         assert response.status_code == 200
 
         data = response.json()
@@ -109,14 +153,22 @@ class TestSchemaRoundTrip:
             "max_tokens": 100,
             "user": "test-user",
         }
-        response = client.post("/v1/chat/completions", json=payload)
+        response = client.post(
+            "/v1/chat/completions",
+            json=payload,
+            headers={"agent-session-id": "schema-full"},
+        )
         assert response.status_code == 200
         assert response.json()["model"] == "gpt-4"
 
     def test_unknown_fields_allowed(self, client: TestClient, minimal_payload: dict):
         """Ensure unknown fields are accepted (extra='allow')."""
         minimal_payload["custom_field"] = "custom_value"
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"agent-session-id": "schema-unknown"},
+        )
         assert response.status_code == 200
 
 
@@ -127,8 +179,11 @@ class TestLogging:
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
         """POST payload creates JSONL file with request/response."""
-        minimal_payload["user"] = "test-session"
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"agent-session-id": "test-session"},
+        )
         assert response.status_code == 200
 
         # Find the log file
@@ -149,10 +204,12 @@ class TestLogging:
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
         """Multiple requests to same session append to same file."""
-        minimal_payload["user"] = "multi-test"
-
         for _ in range(3):
-            response = client.post("/v1/chat/completions", json=minimal_payload)
+            response = client.post(
+                "/v1/chat/completions",
+                json=minimal_payload,
+                headers={"agent-session-id": "multi-test"},
+            )
             assert response.status_code == 200
 
         log_files = list(temp_log_dir.rglob("*.jsonl"))
@@ -166,25 +223,27 @@ class TestLogging:
 class TestSessionResolution:
     """Test session ID resolution fallback order."""
 
-    def test_user_field_takes_precedence(
+    def test_required_header_takes_precedence(
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
-        """User field in payload takes precedence over headers."""
-        minimal_payload["user"] = "payload-user"
+        """Configured session header takes precedence over X-Session-Id."""
         response = client.post(
             "/v1/chat/completions",
             json=minimal_payload,
-            headers={"X-Session-Id": "header-session"},
+            headers={
+                "agent-session-id": "primary-session",
+                "X-Session-Id": "fallback-session",
+            },
         )
         assert response.status_code == 200
 
         log_files = list(temp_log_dir.rglob("*.jsonl"))
-        assert any("payload-user" in f.name for f in log_files)
+        assert any("primary-session" in f.name for f in log_files)
 
-    def test_header_fallback(
+    def test_x_session_id_fallback_in_required_mode(
         self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
-        """X-Session-Id header is used when user field missing."""
+        """X-Session-Id header is used when primary header is missing."""
         response = client.post(
             "/v1/chat/completions",
             json=minimal_payload,
@@ -195,43 +254,72 @@ class TestSessionResolution:
         log_files = list(temp_log_dir.rglob("*.jsonl"))
         assert any("header-session" in f.name for f in log_files)
 
-    def test_bearer_token_mapping(
-        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    def test_missing_required_header_returns_400(
+        self, client: TestClient, minimal_payload: dict
     ):
-        """Bearer token creates consistent session mapping."""
+        """Missing required session header returns 400."""
+        response = client.post("/v1/chat/completions", json=minimal_payload)
+        assert response.status_code == 400
+        payload = response.json()
+        assert payload["error"] == "Missing required session header."
+        assert "agent-session-id" in payload["required_headers"]
+        assert "X-Session-Id" in payload["required_headers"]
+
+    def test_legacy_x_session_id_preferred_over_bearer(
+        self, legacy_client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    ):
+        """Legacy mode prefers X-Session-Id over bearer token."""
+        response = legacy_client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={
+                "X-Session-Id": "legacy-header",
+                "Authorization": "Bearer legacy-token",
+            },
+        )
+        assert response.status_code == 200
+
+        log_files = list(temp_log_dir.rglob("*.jsonl"))
+        assert any("legacy-header" in f.name for f in log_files)
+
+    def test_bearer_token_mapping_legacy(
+        self, legacy_client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    ):
+        """Bearer token creates consistent session mapping in legacy mode."""
         headers = {"Authorization": "Bearer test-token-123"}
 
-        # First request
-        response1 = client.post("/v1/chat/completions", json=minimal_payload, headers=headers)
+        response1 = legacy_client.post(
+            "/v1/chat/completions", json=minimal_payload, headers=headers
+        )
         assert response1.status_code == 200
 
-        # Second request with same token
-        response2 = client.post("/v1/chat/completions", json=minimal_payload, headers=headers)
+        response2 = legacy_client.post(
+            "/v1/chat/completions", json=minimal_payload, headers=headers
+        )
         assert response2.status_code == 200
 
-        # Should have only one log file (same session)
         log_files = list(temp_log_dir.rglob("*.jsonl"))
         assert len(log_files) == 1
         assert "session-" in log_files[0].name
 
-    def test_timestamp_fallback(
-        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+    def test_single_session_fallback(
+        self, single_session_client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
-        """Timestamp fallback when no session identifiers provided."""
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        """Single-session fallback is used when no headers are present."""
+        response = single_session_client.post("/v1/chat/completions", json=minimal_payload)
         assert response.status_code == 200
 
         log_files = list(temp_log_dir.rglob("*.jsonl"))
         assert len(log_files) == 1
-        assert "anon-" in log_files[0].name
+        assert "single-session" in log_files[0].name
 
     def test_reset_sessions_endpoint_generates_new_session(
-        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+        self, legacy_client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
         """POST /sessions clears token mapping and forces new session IDs."""
         headers = {"Authorization": "Bearer rotate-token"}
 
-        response1 = client.post(
+        response1 = legacy_client.post(
             "/v1/chat/completions", json=minimal_payload, headers=headers
         )
         assert response1.status_code == 200
@@ -243,7 +331,7 @@ class TestSessionResolution:
         reset_response = client.post("/sessions")
         assert reset_response.status_code == 200
 
-        response2 = client.post(
+        response2 = legacy_client.post(
             "/v1/chat/completions", json=minimal_payload, headers=headers
         )
         assert response2.status_code == 200
@@ -255,13 +343,17 @@ class TestSessionResolution:
         assert initial_name in names
 
     def test_session_prefix_updates_generated_ids(
-        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
+        self, legacy_client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
         """POST /sessions with session_prefix updates generated session IDs."""
-        reset_response = client.post("/sessions", json={"session_prefix": "client"})
+        reset_response = legacy_client.post("/sessions", json={"session_prefix": "client"})
         assert reset_response.status_code == 200
 
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = legacy_client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"Authorization": "Bearer prefix-token"},
+        )
         assert response.status_code == 200
 
         log_files = list(temp_log_dir.rglob("*.jsonl"))
@@ -274,27 +366,35 @@ class TestSessionResolution:
     )
     def test_session_prefix_can_be_cleared(
         self,
-        client: TestClient,
+        legacy_client: TestClient,
         minimal_payload: dict,
         temp_log_dir: Path,
         payload: dict,
     ):
         """POST /sessions with null/blank session_prefix clears the override."""
-        set_response = client.post("/sessions", json={"session_prefix": "client"})
+        set_response = legacy_client.post("/sessions", json={"session_prefix": "client"})
         assert set_response.status_code == 200
 
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = legacy_client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"Authorization": "Bearer clear-prefix"},
+        )
         assert response.status_code == 200
 
-        clear_response = client.post("/sessions", json=payload)
+        clear_response = legacy_client.post("/sessions", json=payload)
         assert clear_response.status_code == 200
 
-        response = client.post("/v1/chat/completions", json=minimal_payload)
+        response = legacy_client.post(
+            "/v1/chat/completions",
+            json=minimal_payload,
+            headers={"Authorization": "Bearer clear-prefix-2"},
+        )
         assert response.status_code == 200
 
         names = {path.name for path in temp_log_dir.rglob("*.jsonl")}
         assert any("client-" in name for name in names)
-        assert any("anon-" in name for name in names)
+        assert any("session-" in name for name in names)
 
 
 class TestUpstreamErrors:
@@ -312,7 +412,11 @@ class TestUpstreamErrors:
             app = create_app(settings)
             client = TestClient(app)
 
-            response = client.post("/v1/chat/completions", json=minimal_payload)
+            response = client.post(
+                "/v1/chat/completions",
+                json=minimal_payload,
+                headers={"agent-session-id": "upstream-error"},
+            )
             assert response.status_code == 503
             assert response.text == "Service unavailable"
 
@@ -328,7 +432,11 @@ class TestUpstreamErrors:
             app = create_app(settings)
             client = TestClient(app)
 
-            response = client.post("/v1/chat/completions", json=minimal_payload)
+            response = client.post(
+                "/v1/chat/completions",
+                json=minimal_payload,
+                headers={"agent-session-id": "upstream-timeout"},
+            )
             assert response.status_code == 504
 
     def test_upstream_connection_error_returns_502(
@@ -343,7 +451,11 @@ class TestUpstreamErrors:
             app = create_app(settings)
             client = TestClient(app)
 
-            response = client.post("/v1/chat/completions", json=minimal_payload)
+            response = client.post(
+                "/v1/chat/completions",
+                json=minimal_payload,
+                headers={"agent-session-id": "upstream-conn"},
+            )
             assert response.status_code == 502
             assert response.text == "Cannot connect to upstream"
 
@@ -425,7 +537,10 @@ class TestHeaderForwarding:
             client.post(
                 "/v1/chat/completions",
                 json=minimal_payload,
-                headers={"Authorization": "Bearer sk-my-secret-key"},
+                headers={
+                    "agent-session-id": "header-forward",
+                    "Authorization": "Bearer sk-my-secret-key",
+                },
             )
 
             # Check that forward_request was called with headers containing authorization

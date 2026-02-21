@@ -80,6 +80,30 @@ def serve(
             envvar="PROXY_VERBOSE",
         ),
     ] = False,
+    session_header: Annotated[
+        str,
+        typer.Option(
+            "--session-header",
+            help="Header name used to identify session (required by default).",
+            envvar="PROXY_SESSION_HEADER",
+        ),
+    ] = "agent-session-id",
+    require_session_header: Annotated[
+        bool,
+        typer.Option(
+            "--require-session-header/--no-require-session-header",
+            help="Require session header on every request (default: true).",
+            envvar="PROXY_REQUIRE_SESSION_HEADER",
+        ),
+    ] = True,
+    allow_bearer_fallback: Annotated[
+        bool,
+        typer.Option(
+            "--allow-bearer-token-fallback/--no-allow-bearer-token-fallback",
+            help="Allow bearer token as session fallback when header enforcement is disabled.",
+            envvar="PROXY_ALLOW_BEARER_FALLBACK",
+        ),
+    ] = False,
 ) -> None:
     """Start the OpenAI-compatible logging proxy server."""
     # Create settings from CLI args (env vars are also loaded)
@@ -90,6 +114,9 @@ def serve(
         host=host,
         port=port,
         verbose=verbose,
+        session_header=session_header,
+        require_session_header=require_session_header,
+        allow_bearer_fallback=allow_bearer_fallback,
     )
 
     configure_logging(settings.verbose)
@@ -97,6 +124,12 @@ def serve(
     logger.info(f"Upstream endpoint: {settings.upstream_endpoint}")
     logger.info(f"Default model: {settings.default_model}")
     logger.info(f"Logging requests to: {settings.log_root.absolute()}")
+    logger.info(
+        "Session header: {header} (required={required}, bearer_fallback={bearer})",
+        header=settings.session_header,
+        required=settings.require_session_header,
+        bearer=settings.allow_bearer_fallback,
+    )
 
     # Ensure log directory exists
     settings.log_root.mkdir(parents=True, exist_ok=True)

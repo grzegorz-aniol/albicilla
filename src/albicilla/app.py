@@ -7,7 +7,12 @@ from loguru import logger
 from .config import Settings
 from .logging import append_session_entry_async, configure_logging
 from .models import ChatCompletionRequest, SessionPrefixRequest
-from .session import clear_token_map, resolve_session_id, set_session_prefix
+from .session import (
+    MissingSessionHeaderError,
+    clear_token_map,
+    resolve_session_id,
+    set_session_prefix,
+)
 from .upstream import (
     StreamingContext,
     UpstreamError,
@@ -63,7 +68,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Supports both streaming and non-streaming modes.
         """
         # 1. Resolve session ID
-        session_id = await resolve_session_id(request, payload.user, settings)
+        try:
+            session_id = await resolve_session_id(request, payload.user, settings)
+        except MissingSessionHeaderError as exc:
+            missing = [exc.required_header]
+            if exc.fallback_header:
+                missing.append(exc.fallback_header)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Missing required session header.",
+                    "required_headers": missing,
+                    "hint": (
+                        "Provide a session header or disable enforcement with "
+                        "--no-require-session-header."
+                    ),
+                },
+            )
 
         # 2. Get request headers to forward
         request_headers = dict(request.headers)

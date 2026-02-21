@@ -15,9 +15,9 @@ class Settings(BaseSettings):
     response_template: str = "Proxy logged {n_messages} messages for {model}."
     verbose: bool = False
     upstream_endpoint: str  # Required - upstream OpenAI-compatible API base URL
-
-    # Constants (not configurable via env)
-    session_header: str = "X-Session-Id"
+    session_header: str = "agent-session-id"
+    require_session_header: bool = True
+    allow_bearer_fallback: bool = False
 
     model_config = {
         "env_prefix": "PROXY_",
