@@ -9,10 +9,10 @@ from fastapi.testclient import TestClient
 
 from albicilla.app import create_app
 from albicilla.config import Settings
-from albicilla.logging import sanitize_session_id
+from albicilla.logging import clear_session_file_prefixes, sanitize_session_id
 from albicilla.models import ChatCompletionRequest, ChatCompletionMessage
 from albicilla.responders import build_response
-from albicilla.session import clear_session_prefix, clear_token_map
+from albicilla.session import clear_token_map
 from albicilla.upstream import UpstreamResponse
 
 
@@ -85,7 +85,7 @@ def mock_upstream():
 def client(settings: Settings, mock_upstream) -> TestClient:
     """Create a test client with configured app and mocked upstream."""
     clear_token_map()
-    clear_session_prefix()
+    clear_session_file_prefixes()
     app = create_app(settings)
     return TestClient(app)
 
@@ -94,7 +94,7 @@ def client(settings: Settings, mock_upstream) -> TestClient:
 def legacy_client(legacy_settings: Settings, mock_upstream) -> TestClient:
     """Client with legacy session resolution enabled."""
     clear_token_map()
-    clear_session_prefix()
+    clear_session_file_prefixes()
     app = create_app(legacy_settings)
     return TestClient(app)
 
@@ -103,7 +103,7 @@ def legacy_client(legacy_settings: Settings, mock_upstream) -> TestClient:
 def single_session_client(single_session_settings: Settings, mock_upstream) -> TestClient:
     """Client with single-session fallback enabled."""
     clear_token_map()
-    clear_session_prefix()
+    clear_session_file_prefixes()
     app = create_app(single_session_settings)
     return TestClient(app)
 
@@ -328,7 +328,7 @@ class TestSessionResolution:
         assert len(initial_logs) == 1
         initial_name = initial_logs[0].name
 
-        reset_response = client.post("/sessions")
+        reset_response = legacy_client.post("/sessions")
         assert reset_response.status_code == 200
 
         response2 = legacy_client.post(
@@ -343,16 +343,19 @@ class TestSessionResolution:
         assert initial_name in names
 
     def test_session_prefix_updates_generated_ids(
-        self, legacy_client: TestClient, minimal_payload: dict, temp_log_dir: Path
+        self, client: TestClient, minimal_payload: dict, temp_log_dir: Path
     ):
-        """POST /sessions with session_prefix updates generated session IDs."""
-        reset_response = legacy_client.post("/sessions", json={"session_prefix": "client"})
+        """POST /sessions with session_prefix updates log file naming."""
+        session_id = "client-session"
+        reset_response = client.post(
+            "/sessions", json={"session_prefix": "client", "session_id": session_id}
+        )
         assert reset_response.status_code == 200
 
-        response = legacy_client.post(
+        response = client.post(
             "/v1/chat/completions",
             json=minimal_payload,
-            headers={"Authorization": "Bearer prefix-token"},
+            headers={"agent-session-id": session_id},
         )
         assert response.status_code == 200
 
@@ -366,35 +369,40 @@ class TestSessionResolution:
     )
     def test_session_prefix_can_be_cleared(
         self,
-        legacy_client: TestClient,
+        client: TestClient,
         minimal_payload: dict,
         temp_log_dir: Path,
         payload: dict,
     ):
         """POST /sessions with null/blank session_prefix clears the override."""
-        set_response = legacy_client.post("/sessions", json={"session_prefix": "client"})
+        session_id = "clear-prefix-session"
+        set_response = client.post(
+            "/sessions", json={"session_prefix": "client", "session_id": session_id}
+        )
         assert set_response.status_code == 200
 
-        response = legacy_client.post(
+        response = client.post(
             "/v1/chat/completions",
             json=minimal_payload,
-            headers={"Authorization": "Bearer clear-prefix"},
+            headers={"agent-session-id": session_id},
         )
         assert response.status_code == 200
 
-        clear_response = legacy_client.post("/sessions", json=payload)
+        clear_response = client.post(
+            "/sessions", json={**payload, "session_id": session_id}
+        )
         assert clear_response.status_code == 200
 
-        response = legacy_client.post(
+        response = client.post(
             "/v1/chat/completions",
             json=minimal_payload,
-            headers={"Authorization": "Bearer clear-prefix-2"},
+            headers={"agent-session-id": session_id},
         )
         assert response.status_code == 200
 
         names = {path.name for path in temp_log_dir.rglob("*.jsonl")}
         assert any("client-" in name for name in names)
-        assert any("session-" in name for name in names)
+        assert f"{session_id}.jsonl" in names
 
 
 class TestUpstreamErrors:

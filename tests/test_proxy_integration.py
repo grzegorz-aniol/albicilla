@@ -211,7 +211,6 @@ class TestIntegration:
         resp = httpx.post(
             f"{server['url']}/v1/chat/completions",
             json=payload,
-            headers={"agent-session-id": "invalid-payload"},
         )
 
         assert resp.status_code == 400

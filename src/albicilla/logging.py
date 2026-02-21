@@ -15,6 +15,8 @@ from .models import LogEntry
 
 _session_locks: dict[str, asyncio.Lock] = {}
 _session_locks_guard = threading.Lock()
+_session_prefix_map: dict[str, str] = {}
+_session_prefix_guard = threading.Lock()
 
 
 def sanitize_session_id(session_id: str) -> str:
@@ -30,6 +32,38 @@ def sanitize_session_id(session_id: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id)
     # Ensure it's not empty
     return sanitized or "unknown"
+
+
+def set_session_file_prefix(session_id: str, prefix: str | None) -> None:
+    """Set or clear the log file prefix for a session ID."""
+    cleaned_session_id = session_id.strip()
+    if not cleaned_session_id:
+        return
+    cleaned_prefix = prefix.strip() if prefix is not None else ""
+    with _session_prefix_guard:
+        if not cleaned_prefix:
+            _session_prefix_map.pop(cleaned_session_id, None)
+            return
+        _session_prefix_map[cleaned_session_id] = cleaned_prefix
+
+
+def clear_session_file_prefixes() -> None:
+    """Clear all session file prefix overrides."""
+    with _session_prefix_guard:
+        _session_prefix_map.clear()
+
+
+def _resolve_log_session_id(session_id: str) -> str:
+    safe_session_id = sanitize_session_id(session_id)
+    cleaned_session_id = session_id.strip()
+    if not cleaned_session_id:
+        return safe_session_id
+    with _session_prefix_guard:
+        prefix = _session_prefix_map.get(cleaned_session_id)
+    if not prefix:
+        return safe_session_id
+    safe_prefix = sanitize_session_id(prefix)
+    return f"{safe_prefix}-{safe_session_id}"
 
 
 def configure_logging(verbose: bool) -> None:
@@ -53,7 +87,7 @@ def get_log_path(settings: Settings, session_id: str) -> Path:
     Returns:
         Path to the JSONL log file.
     """
-    safe_session_id = sanitize_session_id(session_id)
+    safe_session_id = _resolve_log_session_id(session_id)
     date_folder = datetime.now(UTC).strftime("%Y-%m-%d")
     return settings.log_root / date_folder / f"{safe_session_id}.jsonl"
 
@@ -84,7 +118,8 @@ def _build_entry(
         request=request_data,
         response=response_data,
     )
-    return safe_session_id, entry
+    log_session_id = _resolve_log_session_id(session_id)
+    return log_session_id, entry
 
 
 def _write_entry(log_path: Path, entry: LogEntry) -> None:
@@ -110,9 +145,9 @@ async def append_session_entry_async(
     Raises:
         IOError: If the log write fails.
     """
-    safe_session_id, entry = _build_entry(session_id, request_data, response_data)
-    log_path = _get_log_path_for_safe_session(settings, safe_session_id)
-    lock = _get_session_lock(safe_session_id)
+    log_session_id, entry = _build_entry(session_id, request_data, response_data)
+    log_path = _get_log_path_for_safe_session(settings, log_session_id)
+    lock = _get_session_lock(log_session_id)
 
     try:
         async with lock:
@@ -140,8 +175,8 @@ def append_session_entry(
     Raises:
         IOError: If the log write fails.
     """
-    safe_session_id, entry = _build_entry(session_id, request_data, response_data)
-    log_path = _get_log_path_for_safe_session(settings, safe_session_id)
+    log_session_id, entry = _build_entry(session_id, request_data, response_data)
+    log_path = _get_log_path_for_safe_session(settings, log_session_id)
 
     try:
         _write_entry(log_path, entry)

@@ -11,7 +11,6 @@ from .config import Settings
 # Thread-safe via a shared lock.
 _token_session_map: dict[str, str] = {}
 _token_lock = threading.Lock()
-_session_prefix: str | None = None
 _SINGLE_SESSION_ID = "single-session"
 
 
@@ -24,31 +23,11 @@ class MissingSessionHeaderError(RuntimeError):
         self.fallback_header = fallback_header
 
 
-def set_session_prefix(prefix: str | None) -> None:
-    """Set a global prefix for generated session IDs."""
-    global _session_prefix
-    if prefix is None:
-        _session_prefix = None
-        return
-    cleaned = prefix.strip()
-    if not cleaned:
-        _session_prefix = None
-        return
-    _session_prefix = cleaned
-
-
-def clear_session_prefix() -> None:
-    """Clear the global session prefix."""
-    global _session_prefix
-    _session_prefix = None
-
-
 def _generate_session_id(default_prefix: str) -> str:
-    prefix = _session_prefix or default_prefix
     # Use a fixed-width, digits-only unix timestamp suffix for stable
     # lexicographic sorting (and to avoid mixed alpha/decimal UUID strings).
     suffix = f"{time.time_ns():019d}"
-    return f"{prefix}-{suffix}"
+    return f"{default_prefix}-{suffix}"
 
 
 async def resolve_session_id(request: Request, payload_user: str | None, settings: Settings) -> str:

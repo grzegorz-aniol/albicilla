@@ -5,13 +5,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from .config import Settings
-from .logging import append_session_entry_async, configure_logging
+from .logging import (
+    append_session_entry_async,
+    configure_logging,
+    set_session_file_prefix,
+)
 from .models import ChatCompletionRequest, SessionPrefixRequest
 from .session import (
     MissingSessionHeaderError,
     clear_token_map,
     resolve_session_id,
-    set_session_prefix,
 )
 from .upstream import (
     StreamingContext,
@@ -217,7 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         """Reset internal session mappings and optionally update the session prefix."""
         if payload is not None:
-            set_session_prefix(payload.session_prefix)
+            set_session_file_prefix(payload.session_id, payload.session_prefix)
         clear_token_map()
         logger.info("Cleared in-memory token-session map via /sessions endpoint")
         return Response(status_code=200)

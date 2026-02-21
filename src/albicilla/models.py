@@ -80,7 +80,10 @@ class SessionPrefixRequest(BaseModel):
     """Payload for updating the generated session ID prefix."""
 
     session_prefix: str | None = Field(
-        None, description="Optional prefix for generated session IDs."
+        None, description="Optional prefix for session log file names."
+    )
+    session_id: str = Field(
+        ..., min_length=1, description="Session identifier to associate with the prefix."
     )
 
 
