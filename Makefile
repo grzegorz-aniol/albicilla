@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-all test-output-integrity run-proxy convert conv
+.PHONY: test test-unit test-integration test-all run-proxy
 
 default:
 	@echo "Specify a target"
@@ -13,10 +13,3 @@ run-proxy-openai:
 # Run all tests
 test:
 	uv run pytest tests/ -v
-
-# Validate output JSONL files only
-test-output-integrity:
-	uv run pytest tests/test_output_integrity.py -s
-
-convert:
-	uv run albicilla-conv --logs ./good_logs/ --output ./output/ --json-tool-calls -v

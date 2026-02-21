@@ -8,7 +8,7 @@ OpenAI-compatible logging pass-trough proxy that captures LLM requests/responses
 - Supports `/v1/chat/completions` endpoint (both streaming and non-streaming requests)
 - Forwards requests to upstream LLM and logs request/response pairs
 - Per-session JSONL logging with automatic date-based organization
-- Session grouping via `user` field, headers, or bearer tokens
+- Session grouping via required session header (default `agent-session-id`), with `X-Session-Id` fallback
 - Per-session log writes are serialized in-process; multi-worker setups need external locking
 
 ## Installation
@@ -25,6 +25,9 @@ Start the proxy server:
 uv run albicilla-proxy --upstream https://api.openai.com --log-root ./proxy_logs --host 127.0.0.1 --port 9000
 ```
 
+Session headers are enforced by default. Set a custom header name with `--session-header`, disable enforcement with
+`--no-require-session-header`, and (optionally) allow bearer fallback with `--allow-bearer-token-fallback`.
+
 Or with environment variables:
 
 ```bash
@@ -34,6 +37,9 @@ export PROXY_LOG_ROOT=./proxy_logs
 export PROXY_HOST=127.0.0.1
 export PROXY_PORT=9000
 export PROXY_VERBOSE=false
+export PROXY_SESSION_HEADER=agent-session-id
+export PROXY_REQUIRE_SESSION_HEADER=true
+export PROXY_ALLOW_BEARER_FALLBACK=false
 uv run albicilla-proxy
 ```
 
@@ -128,103 +134,6 @@ client = OpenAIChatCompletionsClient(
 weather_bot = Agent("Summarize weather alerts", client=client, model="gpt-4o-mini")
 print(weather_bot.run("Any storms expected?"))
 ```
-
-## Conversation Converter
-
-Use the bundled `albicilla-conv` CLI to turn captured proxy logs into JSONL datasets that can be fed to fine-tuning or analytics workflows. All commands expect `--logs` to point at the directory that the proxy writes to and `--output` to target a directory where converted files will be stored.
-
-#### Expected log format
-
-You can find an example of the expected output format here : [./conv-format.md](./conv-format.md)
-
-#### Output schema (flattened by default)
-
-Each processed record mirrors the OpenAI fine-tuning schema but is normalized so downstream tooling does not need to inspect raw request envelopes:
-
-- `messages` contains the chronology of the request conversation plus the final assistant reply. When `--json-tool-calls` is enabled, tool calls are emitted inline using `<tool_call>` / `<tool_result>` wrappers so that the assistant content remains valid JSON even after multiple calls.
-- `tools` is derived from the original request’s `tools` array and flattened to just the function definition block (`{"name", "description", "parameters"}` etc.). This makes the schema explicit for analytics/training without carrying the surrounding wrapper structure.
-
-### Per-day output (native tool calls by default)
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output
-```
-
-This writes one `YYYY-MM-DD.jsonl` file per date inside `./output` and keeps the tool call payloads exactly as captured by the proxy.
-
-### Per-scenario output
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output --group-by scenario
-```
-
-This writes one `<scenario>.jsonl` file per scenario inside `./output` (scenario naming matches the tool usage CSV convention).
-
-By default the converter also writes a tool usage report (grouped to match the export mode) to `output/tool-usage.csv` containing:
-
-- `date` (derived from the `proxy_logs/YYYY-MM-DD/` folder name)
-- `scenario` (derived from the log filename prefix)
-- `session_count` (number of session files aggregated for the report row)
-- `tool_call_count` (assistant-side tool call requests only, summed across all sessions in the row)
-- `tool_definition_count` (unique tool definition names available across all sessions in the row)
-- `client_turns` (count of consecutive message groups where role is `system`/`user`, summed across all sessions in the row; tool result messages are ignored for grouping)
-- `assistant_turns` (count of consecutive message groups where role is `assistant`, summed across all sessions in the row; tool result messages are ignored for grouping)
-- `assistant_turns_with_tools` (count of consecutive `assistant` message groups that contain at least one tool request, summed across all sessions in the row; tool results are ignored)
-
-Notes:
-- When exporting by date (default), the report is grouped by `date` (the `scenario` column is empty).
-- When exporting by scenario (`--group-by scenario`), the report is grouped by `scenario` (the `date` column is empty).
-- When exporting as a single file (`--single-file`), the report contains a single rollup row (both `date` and `scenario` are empty).
-- By default the converter drops Goose-injected `role=user` messages that are fully wrapped in `<info-msg>...</info-msg>`. Disable with `--no-cleanup-goose-info`.
-
-### Enable tool structured output (JSON tool calls)
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output --json-tool-calls
-```
-
-Wraps tool invocations and results with inline structured tags so downstream consumers can reliably parse them:
-
-```json
-{
-  "messages": [
-    {
-      "role": "assistant",
-      "content": "<tool_call>{\"name\": \"retrieve_user\", \"arguments\": {\"user_id\": 42}}</tool_call>"
-    },
-    {
-      "role": "tool",
-      "content": "<tool_result tool_call_id=\"call_abc\">{\"name\": \"Ada Lovelace\"}</tool_result>"
-    }
-  ]
-}
-```
-
-### Single-file export
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output --single-file
-```
-
-Collects all sessions into one `conversations.jsonl` file inside the output directory.
-
-### Verbose logging
-
-```bash
-uv run albicilla-conv --logs ./proxy_logs --output ./output -v
-```
-
-Adds progress information to stderr, which is useful when processing large log directories.
-
-### Validating exported sessions
-
-Use the JSON Schema fixture and regression test to ensure any collected sessions conform to the expected structure:
-
-```bash
-uv run pytest tests/test_output_integrity.py -q
-```
-
-This test walks every `*.jsonl` file under `output/`, validates each tool definition against the shared schema fixture, and asserts that tool-call serialization (inline XML wrappers, required fields, etc.) matches the format consumed by downstream analytics.
 
 ## Example Request
 
